@@ -27,13 +27,14 @@ const (
 	CapabilitySFTP          Capability = "sftp"
 	CapabilityLocalForward  Capability = "local_forward"
 	CapabilityRemoteForward Capability = "remote_forward"
+	CapabilityAgentForward  Capability = "agent_forward"
 )
 
 // ParseCapability validates a capability string.
 func ParseCapability(value string) (Capability, error) {
 	capability := Capability(value)
 	switch capability {
-	case CapabilityShell, CapabilityExec, CapabilitySCP, CapabilitySFTP, CapabilityLocalForward, CapabilityRemoteForward:
+	case CapabilityShell, CapabilityExec, CapabilitySCP, CapabilitySFTP, CapabilityLocalForward, CapabilityRemoteForward, CapabilityAgentForward:
 		return capability, nil
 	default:
 		return "", fmt.Errorf("unknown capability %q", value)

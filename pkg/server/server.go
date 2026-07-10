@@ -24,13 +24,14 @@ import (
 
 // Server is the kube-ssh gateway.
 type Server struct {
-	opts     *Options
-	authn    authn.SSHAuthenticator
-	authz    authz.Authorizer
-	resolver target.Resolver
-	backend  backend.Backend
-	audit    audit.Recorder
-	metrics  metrics.Recorder
+	opts         *Options
+	authn        authn.SSHAuthenticator
+	authz        authz.Authorizer
+	resolver     target.Resolver
+	accessPolicy accessSessionPolicyGetter
+	backend      backend.Backend
+	audit        audit.Recorder
+	metrics      metrics.Recorder
 
 	clientStateMu sync.Mutex
 	clientStates  map[*cryptossh.ServerConn]*clientState
@@ -72,17 +73,23 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 		audit:        deps.AuditRecorder,
 		metrics:      deps.Metrics,
 		resolver:     deps.Resolver,
+		accessPolicy: deps.AccessPolicy,
 		backend:      deps.Backend,
 		clientStates: make(map[*cryptossh.ServerConn]*clientState),
 	}
 
 	srv := &gossh.Server{
-		Addr:             s.opts.ListenAddress,
+		Addr: s.opts.ListenAddress,
+		ConnCallback: func(ctx gossh.Context, conn net.Conn) net.Conn {
+			policyConn := newPolicyConn(conn, buildGlobalSessionPolicy(s.opts))
+			WithPolicyConn(ctx, policyConn)
+			return policyConn
+		},
 		Handler:          s.handleSession,
 		PublicKeyHandler: s.handlePublicKey,
 		PasswordHandler:  s.handlePassword,
 		ChannelHandlers: map[string]gossh.ChannelHandler{
-			"session":      gossh.DefaultSessionHandler,
+			"session":      s.handleSessionChannel,
 			"direct-tcpip": s.handleDirectTCPIP,
 		},
 		RequestHandlers: map[string]gossh.RequestHandler{
@@ -230,6 +237,7 @@ func (s *Server) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticate
 		AuthMethod:           info.Method,
 		AuthExtra:            info.Extra,
 		PublicKeyFingerprint: publicKeyFingerprint,
+		SourceIP:             remoteHost(ctx.RemoteAddr()),
 		TargetHints:          info.TargetHints,
 	})
 	if err != nil {
@@ -241,13 +249,29 @@ func (s *Server) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticate
 		return false
 	}
 
+	policy, err := s.resolveSessionPolicy(ctx, ctx.User(), info.Extra)
+	if err != nil {
+		tgt.Release()
+		s.metricsRecorder().AuthAttempt(credential, "session_policy_rejected")
+		slog.WarnContext(ctx, "session policy resolution failed",
+			"user", ctx.User(),
+			"err", err,
+		)
+		return false
+	}
+	if policyConn, ok := PolicyConnFromContext(ctx); ok {
+		policyConn.ApplyPolicy(policy)
+	}
+
 	WithAuthenticate(ctx, *info)
 	WithTarget(ctx, tgt)
+	WithSessionPolicy(ctx, policy)
 	recorder := s.metricsRecorder()
 	recorder.AuthAttempt(credential, metrics.ResultSuccess)
 	recorder.ConnectionOpened(info.Method)
 	go func() {
 		<-ctx.Done()
+		tgt.Release()
 		recorder.ConnectionClosed(info.Method)
 	}()
 
@@ -259,4 +283,15 @@ func (s *Server) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticate
 		"remote", ctx.RemoteAddr().String(),
 	)
 	return true
+}
+
+func remoteHost(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
 }

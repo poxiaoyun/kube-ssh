@@ -15,6 +15,7 @@ const (
 	StreamTypeHeader                  = "streamType"
 	StreamTypeControl                 = "control"
 	StreamTypeRemoteForwardConnection = "remote-forward.connection"
+	StreamTypeAgentForwardConnection  = "agent-forward.connection"
 	// RemoteForwardBindHeader is the actual listener address. When the client
 	// requests port 0 this value is only known after listen succeeds.
 	RemoteForwardBindHeader = "remoteForwardBind"
@@ -27,6 +28,8 @@ const (
 
 	ControlTypeRemoteForwardListen = "remote-forward.listen"
 	ControlTypeRemoteForwardStop   = "remote-forward.stop"
+	ControlTypeAgentForwardListen  = "agent-forward.listen"
+	ControlTypeAgentForwardStop    = "agent-forward.stop"
 )
 
 type RuntimeRequest struct {
@@ -54,6 +57,10 @@ type RemoteForwardStopRequest struct {
 	Bind string `json:"bind"`
 }
 
+type AgentForwardListenResponse struct {
+	SocketPath string `json:"socketPath"`
+}
+
 type RemoteForwardConnInfo struct {
 	// Bind is the actual remote listener address.
 	Bind string
@@ -76,6 +83,12 @@ func RemoteForwardHeaders(bind, requestedBind, originHost, originPort string) ht
 	headers.Set(RemoteForwardRequestedBindHeader, requestedBind)
 	headers.Set(OriginHostHeader, originHost)
 	headers.Set(OriginPortHeader, originPort)
+	return headers
+}
+
+func AgentForwardHeaders() http.Header {
+	headers := http.Header{}
+	headers.Set(StreamTypeHeader, StreamTypeAgentForwardConnection)
 	return headers
 }
 

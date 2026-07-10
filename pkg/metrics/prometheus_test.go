@@ -25,7 +25,17 @@ func TestPrometheusRecorderRecordsLowCardinalityMetrics(t *testing.T) {
 	recorder.OperationStarted("kube", "exec")
 	recorder.OperationFinished("kube", "exec", ResultSuccess, 10*time.Millisecond)
 	recorder.BackendOperationFinished("exec", ResultNonzeroExit, 20*time.Millisecond)
+	recorder.StreamOpened(StreamKindDirectTCPIP)
+	recorder.StreamBytes(StreamKindDirectTCPIP, StreamDirectionClientToBackend, 128)
+	recorder.StreamClosed(StreamKindDirectTCPIP)
+	recorder.HelperAcquired("sftp")
 	recorder.HelperAcquireFinished("sftp", ResultError, 30*time.Millisecond)
+	recorder.HelperReleased("sftp", ResultSuccess, 35*time.Millisecond)
+	recorder.AccessPolicyCacheSyncFinished("access", ResultSuccess, 40*time.Millisecond)
+	recorder.AccessPolicyObjects("access", 2)
+	recorder.AccessPolicyAuthFinished(CredentialPublicKey, ResultNotProvided, 50*time.Millisecond)
+	recorder.AccessPolicyResolveFinished(ResultError, 60*time.Millisecond)
+	recorder.AccessPolicyAuthorizeFinished("sftp", "Deny", ResultDenied, 70*time.Millisecond)
 
 	families, err := registry.Gather()
 	if err != nil {
@@ -46,8 +56,38 @@ func TestPrometheusRecorderRecordsLowCardinalityMetrics(t *testing.T) {
 	if got := metricValue(t, families, "test_kube_ssh_backend_operations_total", labels{"operation": "exec", "result": "nonzero_exit"}); got != 1 {
 		t.Fatalf("backend operations = %v, want 1", got)
 	}
+	if got := metricValue(t, families, "test_kube_ssh_streams_total", labels{"kind": "direct_tcpip"}); got != 1 {
+		t.Fatalf("streams = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_active_streams", labels{"kind": "direct_tcpip"}); got != 0 {
+		t.Fatalf("active streams = %v, want 0", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_stream_bytes_total", labels{"kind": "direct_tcpip", "direction": "client_to_backend"}); got != 128 {
+		t.Fatalf("stream bytes = %v, want 128", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_active_helpers", labels{"capability": "sftp"}); got != 0 {
+		t.Fatalf("active helpers = %v, want 0", got)
+	}
 	if got := metricValue(t, families, "test_kube_ssh_helper_acquire_total", labels{"capability": "sftp", "result": "error"}); got != 1 {
 		t.Fatalf("helper acquire = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_helper_release_total", labels{"capability": "sftp", "result": "success"}); got != 1 {
+		t.Fatalf("helper release = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_access_policy_cache_sync_total", labels{"resource": "access", "result": "success"}); got != 1 {
+		t.Fatalf("access policy cache sync = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_access_policy_objects", labels{"resource": "access"}); got != 2 {
+		t.Fatalf("access policy objects = %v, want 2", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_access_policy_auth_total", labels{"credential": "publickey", "result": "not_provided"}); got != 1 {
+		t.Fatalf("access policy auth = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_access_policy_resolve_total", labels{"result": "error"}); got != 1 {
+		t.Fatalf("access policy resolve = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_access_policy_authorize_total", labels{"capability": "sftp", "decision": "Deny", "result": "denied"}); got != 1 {
+		t.Fatalf("access policy authorize = %v, want 1", got)
 	}
 	if got := metricValue(t, families, "test_kube_ssh_build_info", labels{"version": "v1", "commit": "abc", "build_date": "today"}); got != 1 {
 		t.Fatalf("build info = %v, want 1", got)

@@ -72,6 +72,15 @@ spec:
             - /usr/local/bin/kube-ssh
           args:
             - {{ printf "--listen-address=:%v" .Values.kubeSsh.containerPorts.ssh | quote }}
+            {{- with .Values.kubeSsh.ssh.idleTimeout }}
+            - {{ printf "--ssh-idle-timeout=%s" . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.ssh.maxDuration }}
+            - {{ printf "--ssh-max-duration=%s" . | quote }}
+            {{- end }}
+            {{- if .Values.kubeSsh.ssh.agentForwarding }}
+            - "--ssh-agent-forwarding=true"
+            {{- end }}
             - {{ printf "--helper-path=%s" .Values.kubeSsh.helper.path | quote }}
             - {{ printf "--helper-remote-dir=%s" .Values.kubeSsh.helper.remoteDir | quote }}
             - {{ printf "--access-policy-enabled=%t" .Values.kubeSsh.accessPolicy.enabled | quote }}

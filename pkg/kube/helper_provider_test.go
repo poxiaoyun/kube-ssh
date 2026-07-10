@@ -14,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"xiaoshiai.cn/kube-ssh/pkg/backend"
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/helper"
+	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
@@ -67,6 +69,35 @@ func TestDefaultHelperCapabilitiesAdvertiseProtocolCommands(t *testing.T) {
 	}
 }
 
+func TestAcquireHelperRecordsActiveUntilFirstRelease(t *testing.T) {
+	recorder := &helperMetricsRecorder{}
+	handle := &recordingHelperHandle{}
+	b := &Backend{
+		helperProvider: staticHelperProvider{handle: handle},
+		metrics:        recorder,
+	}
+
+	acquired, err := b.acquireHelper(context.Background(), NewTarget("default", "nginx", "app"), helperpkg.CapabilitySFTP)
+	if err != nil {
+		t.Fatalf("acquireHelper() error = %v", err)
+	}
+	if recorder.acquired != 1 {
+		t.Fatalf("acquired metrics = %d, want 1", recorder.acquired)
+	}
+	if err := acquired.Release(context.Background()); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	if err := acquired.Release(context.Background()); err != nil {
+		t.Fatalf("second Release() error = %v", err)
+	}
+	if handle.releaseCount != 2 {
+		t.Fatalf("underlying release count = %d, want 2", handle.releaseCount)
+	}
+	if recorder.released != 1 {
+		t.Fatalf("release metrics = %d, want 1", recorder.released)
+	}
+}
+
 func TestAcquireHelperCopiesVerifiesHealthAndCaches(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
 	expectedChecksum := sha256Hex([]byte("helper-binary"))
@@ -109,6 +140,41 @@ func TestAcquireHelperCopiesVerifiesHealthAndCaches(t *testing.T) {
 	if script.commands[0][0] != "sh" || script.commands[0][4] == "" {
 		t.Fatalf("copy command = %#v", script.commands[0])
 	}
+}
+
+type helperMetricsRecorder struct {
+	metrics.NopRecorder
+	acquired int
+	released int
+}
+
+func (r *helperMetricsRecorder) HelperAcquired(string) {
+	r.acquired++
+}
+
+func (r *helperMetricsRecorder) HelperReleased(string, string, time.Duration) {
+	r.released++
+}
+
+type staticHelperProvider struct {
+	handle HelperHandle
+}
+
+func (p staticHelperProvider) Acquire(context.Context, *target.Target, string) (HelperHandle, error) {
+	return p.handle, nil
+}
+
+type recordingHelperHandle struct {
+	releaseCount int
+}
+
+func (h *recordingHelperHandle) Command(args ...string) []string {
+	return append([]string{"helper"}, args...)
+}
+
+func (h *recordingHelperHandle) Release(context.Context) error {
+	h.releaseCount++
+	return nil
 }
 
 func TestAcquireHelperFallsBackToTarCopy(t *testing.T) {

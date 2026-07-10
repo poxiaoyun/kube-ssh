@@ -80,6 +80,10 @@ login:
 test:
 	go test ./...
 
+.PHONY: test-envtest
+test-envtest:
+	go test -tags=envtest ./pkg/server -run Envtest -count=1 -v
+
 .PHONY: e2e-build
 e2e-build: build
 	@mkdir -p $(dir $(E2E_HELPER))

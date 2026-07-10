@@ -40,6 +40,40 @@ func TestProxyCopiesBothDirectionsAndHalfCloses(t *testing.T) {
 	waitClosed(t, b.closeWriteCh, "b CloseWrite")
 }
 
+func TestProxyWithObserverRecordsLifecycleAndBytes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := newTestHalfCloser()
+	b := newTestHalfCloser()
+	observer := &testStreamObserver{bytes: map[string]int64{}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ProxyWithObserver(ctx, a, b, observer, "forward", "a_to_b", "b_to_a")
+	}()
+
+	aOutput := readAllAsync(a.output)
+	bOutput := readAllAsync(b.output)
+	writeAndCloseInput(t, a, "from-a")
+	writeAndCloseInput(t, b, "from-b")
+
+	if err := waitErr(t, done); err != nil {
+		t.Fatalf("ProxyWithObserver() error = %v", err)
+	}
+	_ = waitBytes(t, aOutput)
+	_ = waitBytes(t, bOutput)
+	if observer.opened != 1 || observer.closed != 1 {
+		t.Fatalf("opened/closed = %d/%d, want 1/1", observer.opened, observer.closed)
+	}
+	if got := observer.bytes["a_to_b"]; got != int64(len("from-a")) {
+		t.Fatalf("a_to_b bytes = %d, want %d", got, len("from-a"))
+	}
+	if got := observer.bytes["b_to_a"]; got != int64(len("from-b")) {
+		t.Fatalf("b_to_a bytes = %d, want %d", got, len("from-b"))
+	}
+}
+
 func TestProxyContextCancelClosesBothSides(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := newTestHalfCloser()
@@ -56,6 +90,31 @@ func TestProxyContextCancelClosesBothSides(t *testing.T) {
 	}
 	waitClosed(t, a.closeCh, "a Close")
 	waitClosed(t, b.closeCh, "b Close")
+}
+
+type testStreamObserver struct {
+	mu     sync.Mutex
+	opened int
+	closed int
+	bytes  map[string]int64
+}
+
+func (o *testStreamObserver) StreamOpened(string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.opened++
+}
+
+func (o *testStreamObserver) StreamClosed(string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.closed++
+}
+
+func (o *testStreamObserver) StreamBytes(_, direction string, n int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.bytes[direction] += n
 }
 
 func TestProxyReturnsCopyError(t *testing.T) {

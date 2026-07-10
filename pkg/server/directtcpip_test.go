@@ -118,6 +118,10 @@ func (b *directTCPIPBackend) RemoteForward(context.Context, backend.RemoteForwar
 	return nil, errors.New("unexpected RemoteForward call")
 }
 
+func (b *directTCPIPBackend) AgentForward(context.Context, backend.AgentForwardRequest) (backend.AgentForward, error) {
+	return nil, errors.New("unexpected AgentForward call")
+}
+
 func (b *directTCPIPBackend) SFTP(context.Context, backend.StreamRequest) (int, error) {
 	return 1, errors.New("unexpected SFTP call")
 }

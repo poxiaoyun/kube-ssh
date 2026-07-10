@@ -25,6 +25,7 @@ func TestKubernetesSARAuthorizerMapsCapabilities(t *testing.T) {
 		{name: "sftp", capability: CapabilitySFTP, wantSubresource: kubernetesSubresourceExec},
 		{name: "scp", capability: CapabilitySCP, wantSubresource: kubernetesSubresourceExec},
 		{name: "remote forward", capability: CapabilityRemoteForward, wantSubresource: kubernetesSubresourceExec},
+		{name: "agent forward", capability: CapabilityAgentForward, wantSubresource: kubernetesSubresourceExec},
 		{
 			name:            "local forward pod local",
 			capability:      CapabilityLocalForward,

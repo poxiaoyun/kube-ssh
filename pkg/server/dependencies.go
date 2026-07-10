@@ -3,10 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
+	clientgocache "k8s.io/client-go/tools/cache"
+	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
@@ -34,6 +38,7 @@ type Dependencies struct {
 	Authenticator authn.SSHAuthenticator
 	Authorizer    authz.Authorizer
 	Resolver      target.Resolver
+	AccessPolicy  accessSessionPolicyGetter
 	Backend       backend.Backend
 	AuditRecorder audit.Recorder
 	Metrics       metrics.Recorder
@@ -63,7 +68,8 @@ func buildDependencies(opts *Options) (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, fmt.Errorf("build kubernetes client: %w", err)
 	}
-	accessRuntime, err := buildAccessPolicyRuntime(opts, kubeClient, restConfig)
+	metricsRecorder := buildMetrics(opts)
+	accessRuntime, err := buildAccessPolicyRuntime(opts, kubeClient, restConfig, metricsRecorder)
 	if err != nil {
 		return Dependencies{}, fmt.Errorf("build access policy runtime: %w", err)
 	}
@@ -75,7 +81,6 @@ func buildDependencies(opts *Options) (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
-	metricsRecorder := buildMetrics(opts)
 	backend, err := buildBackend(opts, kubeClient, restConfig, metricsRecorder)
 	if err != nil {
 		return Dependencies{}, err
@@ -85,6 +90,7 @@ func buildDependencies(opts *Options) (Dependencies, error) {
 		Authenticator: authenticator,
 		Authorizer:    authorizer,
 		Resolver:      buildResolver(accessRuntime.resolver),
+		AccessPolicy:  accessRuntime.accessPolicy,
 		Backend:       backend,
 		AuditRecorder: audit.NewStdoutRecorder(),
 		Metrics:       metricsRecorder,
@@ -96,11 +102,15 @@ type accessPolicyRuntime struct {
 	authenticator authn.SSHAuthenticator
 	authorizer    authz.Authorizer
 	resolver      target.Resolver
+	accessPolicy  accessSessionPolicyGetter
 }
 
-func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, restConfig *rest.Config) (accessPolicyRuntime, error) {
+func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, restConfig *rest.Config, recorder metrics.Recorder) (accessPolicyRuntime, error) {
 	if opts == nil || !opts.AccessPolicy.Enabled {
 		return accessPolicyRuntime{}, nil
+	}
+	if recorder == nil {
+		recorder = metrics.NopRecorder{}
 	}
 	accessClient, err := generatedclient.NewForConfig(restConfig)
 	if err != nil {
@@ -112,36 +122,111 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 	}
 	factory := generatedinformers.NewSharedInformerFactoryWithOptions(accessClient, 0, factoryOptions...)
 	accessInformer := factory.Ssh().V1().Accesses()
-	store := accesspolicy.NewInformerStore(accessInformer.Lister(), opts.AccessPolicy.Namespace)
-	index := accesspolicy.NewCredentialIndex(store, accesspolicy.NewKubernetesSecretReader(kubeClient))
-	_, err = accessInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(any) {
-			index.Invalidate()
+
+	kubeFactoryOptions := []kubeinformers.SharedInformerOption{}
+	if opts.AccessPolicy.Namespace != "" {
+		kubeFactoryOptions = append(kubeFactoryOptions, kubeinformers.WithNamespace(opts.AccessPolicy.Namespace))
+	}
+	kubeFactory := kubeinformers.NewSharedInformerFactoryWithOptions(kubeClient, 0, kubeFactoryOptions...)
+	podInformer := kubeFactory.Core().V1().Pods()
+	secretInformer := kubeFactory.Core().V1().Secrets()
+
+	if err := accessInformer.Informer().AddIndexers(accesspolicy.AccessPolicyIndexers()); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	if err := secretInformer.Informer().AddIndexers(accesspolicy.SecretPolicyIndexers()); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	accessIndexer := accessInformer.Informer().GetIndexer()
+	podIndexer := podInformer.Informer().GetIndexer()
+	secretIndexer := secretInformer.Informer().GetIndexer()
+	podLister := accesspolicy.NewInformerPodLister(podIndexer)
+	policyCache := accesspolicy.NewPolicyCache(
+		accessIndexer,
+		secretIndexer,
+		opts.AccessPolicy.Namespace,
+	)
+	statusController := accesspolicy.NewAccessStatusController(
+		policyCache,
+		podLister,
+		secretIndexer,
+		func(ctx context.Context, access *sshv1.Access) (*sshv1.Access, error) {
+			return accessClient.SshV1().Accesses(access.Namespace).UpdateStatus(ctx, access, metav1.UpdateOptions{})
 		},
-		UpdateFunc: func(any, any) {
-			index.Invalidate()
-		},
-		DeleteFunc: func(any) {
-			index.Invalidate()
-		},
-	})
-	if err != nil {
+	)
+	if _, err := accessInformer.Informer().AddEventHandler(cacheMetricHandler(func() {
+		recorder.AccessPolicyObjects("access", len(accessIndexer.List()))
+	})); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	if _, err := accessInformer.Informer().AddEventHandler(statusController.AccessEventHandler()); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	if _, err := podInformer.Informer().AddEventHandler(cacheMetricHandler(func() {
+		recorder.AccessPolicyObjects("pod", len(podIndexer.List()))
+	})); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	if _, err := podInformer.Informer().AddEventHandler(statusController.PodEventHandler()); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	if _, err := secretInformer.Informer().AddEventHandler(cacheMetricHandler(func() {
+		recorder.AccessPolicyObjects("secret", len(secretIndexer.List()))
+	})); err != nil {
+		return accessPolicyRuntime{}, err
+	}
+	if _, err := secretInformer.Informer().AddEventHandler(statusController.SecretEventHandler()); err != nil {
 		return accessPolicyRuntime{}, err
 	}
 	return accessPolicyRuntime{
 		start: func(ctx context.Context) error {
 			factory.Start(ctx.Done())
+			kubeFactory.Start(ctx.Done())
+			accessSyncStart := time.Now()
 			for _, ok := range factory.WaitForCacheSync(ctx.Done()) {
 				if !ok {
+					recorder.AccessPolicyCacheSyncFinished("access", cacheSyncResult(ctx), time.Since(accessSyncStart))
 					return fmt.Errorf("access informer cache sync failed")
 				}
 			}
+			recorder.AccessPolicyCacheSyncFinished("access", metrics.ResultSuccess, time.Since(accessSyncStart))
+			recorder.AccessPolicyObjects("access", len(accessIndexer.List()))
+
+			secretSyncStart := time.Now()
+			for _, ok := range kubeFactory.WaitForCacheSync(ctx.Done()) {
+				if !ok {
+					recorder.AccessPolicyCacheSyncFinished("secret", cacheSyncResult(ctx), time.Since(secretSyncStart))
+					return fmt.Errorf("secret informer cache sync failed")
+				}
+			}
+			recorder.AccessPolicyCacheSyncFinished("secret", metrics.ResultSuccess, time.Since(secretSyncStart))
+			recorder.AccessPolicyObjects("secret", len(secretIndexer.List()))
+			recorder.AccessPolicyObjects("pod", len(podIndexer.List()))
+			statusController.Start(ctx)
 			return nil
 		},
-		authenticator: accesspolicy.NewAuthenticator(index),
-		authorizer:    accesspolicy.NewAuthorizer(store),
-		resolver:      accesspolicy.NewResolver(store, accesspolicy.NewKubernetesPodLister(kubeClient)),
+		authenticator: accesspolicy.WithAuthenticatorMetrics(accesspolicy.NewAuthenticator(policyCache), recorder),
+		authorizer:    accesspolicy.WithAuthorizerMetrics(accesspolicy.NewAuthorizer(policyCache), recorder),
+		resolver:      accesspolicy.WithResolverMetrics(accesspolicy.NewResolver(policyCache, podLister), recorder),
+		accessPolicy:  policyCache,
 	}, nil
+}
+
+func cacheSyncResult(ctx context.Context) string {
+	if ctx.Err() != nil {
+		return metrics.ResultCanceled
+	}
+	return metrics.ResultError
+}
+
+func cacheMetricHandler(record func()) clientgocache.ResourceEventHandlerFuncs {
+	return clientgocache.ResourceEventHandlerFuncs{
+		AddFunc: func(any) { record() },
+		UpdateFunc: func(_, _ any) {
+			record()
+		},
+		DeleteFunc: func(any) { record() },
+	}
 }
 
 func buildAuthenticator(opts *Options, accessAuthenticator authn.SSHAuthenticator) (authn.SSHAuthenticator, error) {

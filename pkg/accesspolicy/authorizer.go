@@ -11,10 +11,10 @@ import (
 )
 
 type Authorizer struct {
-	store Store
+	store AccessGetter
 }
 
-func NewAuthorizer(store Store) *Authorizer {
+func NewAuthorizer(store AccessGetter) *Authorizer {
 	return &Authorizer{store: store}
 }
 

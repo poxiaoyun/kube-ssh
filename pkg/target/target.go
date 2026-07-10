@@ -22,6 +22,8 @@ var ErrNotProvided = errors.New("target resolution not provided")
 type Target struct {
 	Kind    string     `json:"kind,omitempty"`
 	Options []KeyValue `json:"options,omitempty"`
+
+	release func()
 }
 
 type KeyValue struct {
@@ -48,6 +50,11 @@ type ResolveRequest struct {
 	AuthExtra map[string][]string
 	// PublicKeyFingerprint is set for public-key authentication.
 	PublicKeyFingerprint string
+	// SourceIP is the peer IP address observed by the kube-ssh gateway. In
+	// Kubernetes deployments this may be a node, load balancer, proxy, or NAT
+	// address rather than the real SSH client IP, so resolvers should treat it as
+	// a best-effort affinity hint instead of a stable caller identity.
+	SourceIP string
 	// TargetHints are optional locator hints returned by authentication.
 	TargetHints []authn.TargetHint
 }
@@ -148,4 +155,23 @@ func (t Target) ToPath() string {
 		path.WriteString(option.Value)
 	}
 	return path.String()
+}
+
+// WithRelease attaches a callback that is invoked when the SSH connection using
+// this target is closed.
+func WithRelease(t *Target, release func()) *Target {
+	if t != nil {
+		t.release = release
+	}
+	return t
+}
+
+// Release releases resolver-owned state associated with this target.
+func (t *Target) Release() {
+	if t == nil || t.release == nil {
+		return
+	}
+	release := t.release
+	t.release = nil
+	release()
 }

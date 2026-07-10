@@ -441,6 +441,21 @@ func (in *SessionPolicy) DeepCopyInto(out *SessionPolicy) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.IdleTimeout != nil {
+		in, out := &in.IdleTimeout, &out.IdleTimeout
+		*out = new(metav1.Duration)
+		**out = **in
+	}
+	if in.MaxDuration != nil {
+		in, out := &in.MaxDuration, &out.MaxDuration
+		*out = new(metav1.Duration)
+		**out = **in
+	}
+	if in.AgentForwarding != nil {
+		in, out := &in.AgentForwarding, &out.AgentForwarding
+		*out = new(bool)
+		**out = **in
+	}
 	return
 }
 

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 	webhookclient "xiaoshiai.cn/kube-ssh/pkg/webhook"
 )
@@ -12,11 +14,18 @@ type Options struct {
 	Kubeconfig     string                `json:"kubeconfig,omitempty"`
 	Helper         HelperOptions         `json:"helper,omitempty"`
 	AccessPolicy   AccessPolicyOptions   `json:"accessPolicy,omitempty"`
+	SSH            SSHOptions            `json:"ssh,omitempty"`
 	Metrics        MetricsOptions        `json:"metrics,omitempty"`
 	Authentication AuthenticationOptions `json:"authentication,omitempty"`
 	Authorization  AuthorizationOptions  `json:"authorization,omitempty"`
 	EnvAllowlist   []string              `json:"envAllowlist,omitempty"`
 	DefaultShell   string                `json:"defaultShell,omitempty"`
+}
+
+type SSHOptions struct {
+	IdleTimeout     time.Duration `json:"idleTimeout,omitempty"`
+	MaxDuration     time.Duration `json:"maxDuration,omitempty"`
+	AgentForwarding bool          `json:"agentForwarding,omitempty"`
 }
 
 type AccessPolicyOptions struct {
@@ -61,7 +70,7 @@ func NewDefaultOptions() *Options {
 			AllowAll: true,
 			Webhook:  webhookclient.Options{Timeout: webhookclient.DefaultTimeout},
 		},
-		EnvAllowlist: []string{"LANG", "LC_*", "TERM_PROGRAM"},
+		EnvAllowlist: []string{"*"},
 		DefaultShell: "/bin/sh",
 	}
 }

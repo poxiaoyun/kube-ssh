@@ -23,10 +23,14 @@ type sessionContext struct {
 	info authn.AuthenticateInfo
 	// target is the resolved backend target for this SSH connection.
 	target *target.Target
+	// policy is the effective session policy for this SSH connection.
+	policy effectiveSessionPolicy
 	// audit is the mutable audit event shared by operation steps.
 	audit audit.Event
 	// session is the underlying SSH session currently being handled.
 	session gossh.Session
+	// agentForward is the accepted agent forwarding socket for this session.
+	agentForward backend.AgentForward
 }
 
 type operationSpec struct {
@@ -133,6 +137,9 @@ func (s *Server) newSessionContext(sess gossh.Session) (*sessionContext, error) 
 		return nil, err
 	}
 	sc.session = sess
+	if agentSession, ok := sess.(agentForwardSession); ok {
+		sc.agentForward = agentSession.AgentForward()
+	}
 	return sc, nil
 }
 
@@ -160,6 +167,7 @@ func (s *Server) newConnectionContext(ctx gossh.Context) (*sessionContext, error
 		ctx:    ctx,
 		info:   info,
 		target: tgt,
+		policy: SessionPolicyFromContext(ctx),
 		audit:  event,
 	}, nil
 }

@@ -91,7 +91,7 @@ func (a *KubernetesSARAuthorizer) Authorize(ctx context.Context, req Request) (D
 
 func kubernetesSARSubresource(attrs Attributes) (string, bool) {
 	switch Capability(attrs.Action) {
-	case CapabilityShell, CapabilityExec, CapabilitySFTP, CapabilitySCP, CapabilityRemoteForward:
+	case CapabilityShell, CapabilityExec, CapabilitySFTP, CapabilitySCP, CapabilityRemoteForward, CapabilityAgentForward:
 		return kubernetesSubresourceExec, true
 	case CapabilityLocalForward:
 		if isKubernetesPodLocalForwardHost(extraValue(attrs.Extra, "destination_host")) {

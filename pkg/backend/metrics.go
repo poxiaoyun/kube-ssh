@@ -12,6 +12,7 @@ const (
 	OperationExec          = "exec"
 	OperationPortForward   = "port_forward"
 	OperationRemoteForward = "remote_forward"
+	OperationAgentForward  = "agent_forward"
 	OperationSFTP          = "sftp"
 	OperationSCP           = "scp"
 )
@@ -46,6 +47,13 @@ func (b *metricsBackend) RemoteForward(ctx context.Context, req RemoteForwardReq
 	start := time.Now()
 	forward, err := b.next.RemoteForward(ctx, req)
 	b.recorder.BackendOperationFinished(OperationRemoteForward, errorResult(err), time.Since(start))
+	return forward, err
+}
+
+func (b *metricsBackend) AgentForward(ctx context.Context, req AgentForwardRequest) (AgentForward, error) {
+	start := time.Now()
+	forward, err := b.next.AgentForward(ctx, req)
+	b.recorder.BackendOperationFinished(OperationAgentForward, errorResult(err), time.Since(start))
 	return forward, err
 }
 

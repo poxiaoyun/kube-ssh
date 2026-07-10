@@ -28,12 +28,18 @@ func TestMetricsBackendRecordsResults(t *testing.T) {
 	if _, err := backend.PortForward(context.Background(), PortForwardRequest{}); err == nil {
 		t.Fatal("PortForward() error = nil, want error")
 	}
+	if _, err := backend.AgentForward(context.Background(), AgentForwardRequest{}); err != nil {
+		t.Fatalf("AgentForward() error = %v", err)
+	}
 
 	if got := recorder.backendResults[OperationExec]; got != "nonzero_exit" {
 		t.Fatalf("exec result = %q, want nonzero_exit", got)
 	}
 	if got := recorder.backendResults[OperationPortForward]; got != "error" {
 		t.Fatalf("port forward result = %q, want error", got)
+	}
+	if got := recorder.backendResults[OperationAgentForward]; got != "success" {
+		t.Fatalf("agent forward result = %q, want success", got)
 	}
 }
 
@@ -46,7 +52,21 @@ func (r *captureMetricsRecorder) ConnectionOpened(string)                       
 func (r *captureMetricsRecorder) ConnectionClosed(string)                                 {}
 func (r *captureMetricsRecorder) OperationStarted(string, string)                         {}
 func (r *captureMetricsRecorder) OperationFinished(string, string, string, time.Duration) {}
+func (r *captureMetricsRecorder) StreamOpened(string)                                     {}
+func (r *captureMetricsRecorder) StreamClosed(string)                                     {}
+func (r *captureMetricsRecorder) StreamBytes(string, string, int64)                       {}
+func (r *captureMetricsRecorder) HelperAcquired(string)                                   {}
 func (r *captureMetricsRecorder) HelperAcquireFinished(string, string, time.Duration)     {}
+func (r *captureMetricsRecorder) HelperReleased(string, string, time.Duration)            {}
+func (r *captureMetricsRecorder) AccessPolicyCacheSyncFinished(string, string, time.Duration) {
+}
+func (r *captureMetricsRecorder) AccessPolicyObjects(string, int) {}
+func (r *captureMetricsRecorder) AccessPolicyAuthFinished(string, string, time.Duration) {
+}
+func (r *captureMetricsRecorder) AccessPolicyResolveFinished(string, time.Duration) {
+}
+func (r *captureMetricsRecorder) AccessPolicyAuthorizeFinished(string, string, string, time.Duration) {
+}
 func (r *captureMetricsRecorder) BackendOperationFinished(operation, result string, _ time.Duration) {
 	if r.backendResults == nil {
 		r.backendResults = map[string]string{}
@@ -58,6 +78,7 @@ type metricsTestBackend struct {
 	execExitCode int
 	execErr      error
 	portErr      error
+	agentErr     error
 }
 
 func (b *metricsTestBackend) Exec(context.Context, ExecRequest) (int, error) {
@@ -75,6 +96,13 @@ func (b *metricsTestBackend) RemoteForward(context.Context, RemoteForwardRequest
 	return nil, errors.New("unexpected RemoteForward call")
 }
 
+func (b *metricsTestBackend) AgentForward(context.Context, AgentForwardRequest) (AgentForward, error) {
+	if b.agentErr != nil {
+		return nil, b.agentErr
+	}
+	return nopAgentForward{}, nil
+}
+
 func (b *metricsTestBackend) SFTP(context.Context, StreamRequest) (int, error) {
 	return 1, errors.New("unexpected SFTP call")
 }
@@ -89,3 +117,11 @@ func (nopHalfCloser) Read([]byte) (int, error)    { return 0, io.EOF }
 func (nopHalfCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopHalfCloser) Close() error                { return nil }
 func (nopHalfCloser) CloseWrite() error           { return nil }
+
+type nopAgentForward struct{}
+
+func (nopAgentForward) SocketPath() string { return "/tmp/agent.sock" }
+func (nopAgentForward) Accept(context.Context) (ioproxy.HalfCloser, error) {
+	return nil, errors.New("unexpected Accept call")
+}
+func (nopAgentForward) Close() error { return nil }

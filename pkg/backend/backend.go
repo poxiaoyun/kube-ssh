@@ -69,6 +69,19 @@ type RemoteForward interface {
 	Close() error
 }
 
+// AgentForwardRequest describes one SSH agent forwarding socket in the target.
+type AgentForwardRequest struct {
+	Target *target.Target
+}
+
+// AgentForward proxies connections from a target-local SSH_AUTH_SOCK back to
+// the client-side OpenSSH agent channel.
+type AgentForward interface {
+	SocketPath() string
+	Accept(ctx context.Context) (ioproxy.HalfCloser, error)
+	Close() error
+}
+
 type StreamRequest struct {
 	Target *target.Target
 	Stdin  io.Reader
@@ -86,6 +99,7 @@ type Backend interface {
 	Exec(ctx context.Context, req ExecRequest) (int, error)
 	PortForward(ctx context.Context, req PortForwardRequest) (ioproxy.HalfCloser, error)
 	RemoteForward(ctx context.Context, req RemoteForwardRequest) (RemoteForward, error)
+	AgentForward(ctx context.Context, req AgentForwardRequest) (AgentForward, error)
 	SFTP(ctx context.Context, req StreamRequest) (int, error)
 	SCP(ctx context.Context, req SCPRequest) (int, error)
 }

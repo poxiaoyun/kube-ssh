@@ -10,6 +10,9 @@ import (
 	"time"
 
 	gossh "github.com/gliderlabs/ssh"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
+	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
@@ -219,6 +222,94 @@ func TestAcceptAuthenticatedResolvesTargetWithIdentity(t *testing.T) {
 	}
 }
 
+func TestAcceptAuthenticatedAppliesAccessSessionPolicy(t *testing.T) {
+	ctx := newTestSSHContext()
+	opts := NewDefaultOptions()
+	opts.EnvAllowlist = []string{"LANG", "LC_*"}
+	opts.SSH.IdleTimeout = time.Hour
+	access := &sshv1.Access{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "notebook"},
+		Spec: sshv1.AccessSpec{
+			Session: &sshv1.SessionPolicy{
+				DefaultShell: "/bin/bash",
+				EnvAllowlist: []string{
+					"LC_TIME",
+					"PATH",
+				},
+				IdleTimeout: &metav1.Duration{Duration: 10 * time.Minute},
+			},
+		},
+	}
+	s := &Server{
+		opts:         opts,
+		resolver:     &captureResolver{target: targetFixturePtr()},
+		accessPolicy: fakeAccessPolicyGetter{access: access},
+	}
+	info := &authn.AuthenticateInfo{
+		User:   authn.UserInfo{Name: "alice"},
+		Method: "crd-password",
+		Extra: map[string][]string{
+			accesspolicy.ExtraAccessNamespace: {"default"},
+			accesspolicy.ExtraAccessName:      {"notebook"},
+		},
+	}
+
+	if !s.acceptAuthenticated(ctx, info, "", metrics.CredentialPassword) {
+		t.Fatal("acceptAuthenticated() = false, want true")
+	}
+	policy := SessionPolicyFromContext(ctx)
+	if policy.DefaultShell != "/bin/bash" {
+		t.Fatalf("DefaultShell = %q, want /bin/bash", policy.DefaultShell)
+	}
+	if policy.IdleTimeout != 10*time.Minute {
+		t.Fatalf("IdleTimeout = %s, want 10m", policy.IdleTimeout)
+	}
+	got := policy.filterEnv([]string{
+		"LANG=C",
+		"LC_TIME=C",
+		"LC_NUMERIC=C",
+		"PATH=/usr/bin",
+	})
+	want := []string{"LC_TIME=C"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filterEnv() = %#v, want %#v", got, want)
+	}
+}
+
+func TestAcceptAuthenticatedAppliesAccessSessionPolicyFromSSHUser(t *testing.T) {
+	ctx := newTestSSHContext()
+	opts := NewDefaultOptions()
+	access := &sshv1.Access{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "nginx.app"},
+		Spec: sshv1.AccessSpec{
+			Session: &sshv1.SessionPolicy{
+				DefaultShell: "/bin/zsh",
+				MaxDuration:  &metav1.Duration{Duration: 15 * time.Minute},
+			},
+		},
+	}
+	s := &Server{
+		opts:         opts,
+		resolver:     &captureResolver{target: targetFixturePtr()},
+		accessPolicy: fakeAccessPolicyGetter{access: access},
+	}
+	info := &authn.AuthenticateInfo{
+		User:   authn.UserInfo{Name: "alice"},
+		Method: "password",
+	}
+
+	if !s.acceptAuthenticated(ctx, info, "", metrics.CredentialPassword) {
+		t.Fatal("acceptAuthenticated() = false, want true")
+	}
+	policy := SessionPolicyFromContext(ctx)
+	if policy.DefaultShell != "/bin/zsh" {
+		t.Fatalf("DefaultShell = %q, want /bin/zsh", policy.DefaultShell)
+	}
+	if policy.MaxDuration != 15*time.Minute {
+		t.Fatalf("MaxDuration = %s, want 15m", policy.MaxDuration)
+	}
+}
+
 func targetFixturePtr() *target.Target {
 	tgt := targetFixture()
 	return &tgt
@@ -233,6 +324,21 @@ type captureResolver struct {
 func (r *captureResolver) Resolve(_ context.Context, req target.ResolveRequest) (*target.Target, error) {
 	r.request = req
 	return r.target, r.err
+}
+
+type fakeAccessPolicyGetter struct {
+	access *sshv1.Access
+	err    error
+}
+
+func (g fakeAccessPolicyGetter) Get(_ context.Context, namespace, name string) (*sshv1.Access, error) {
+	if g.err != nil {
+		return nil, g.err
+	}
+	if g.access == nil || g.access.Namespace != namespace || g.access.Name != name {
+		return nil, errors.New("not found")
+	}
+	return g.access, nil
 }
 
 type testSSHContext struct {

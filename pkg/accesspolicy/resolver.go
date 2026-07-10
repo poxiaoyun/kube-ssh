@@ -3,23 +3,21 @@ package accesspolicy
 import (
 	"context"
 	"fmt"
-	"math/rand"
-	"sort"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/kube"
 	"xiaoshiai.cn/kube-ssh/pkg/status"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
 type Resolver struct {
-	store Store
-	pods  PodLister
+	store    AccessGetter
+	pods     PodLister
+	selector *StrategySelector
 }
 
-func NewResolver(store Store, pods PodLister) *Resolver {
-	return &Resolver{store: store, pods: pods}
+func NewResolver(store AccessGetter, pods PodLister) *Resolver {
+	return &Resolver{store: store, pods: pods, selector: NewStrategySelector()}
 }
 
 func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
@@ -47,11 +45,11 @@ func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*tar
 	if err != nil {
 		return nil, err
 	}
-	pod, ok := choosePod(pods)
+	selection, ok := r.selector.SelectPod(access, pods, req)
 	if !ok {
 		return nil, status.InvalidTarget("access %s/%s matched no available pods", namespace, name)
 	}
-	return kube.NewTarget(namespace, pod.Name, ""), nil
+	return target.WithRelease(kube.NewTarget(namespace, selection.pod.Name, ""), selection.release), nil
 }
 
 func parseAccessLocator(sshUser string) (string, string, bool) {
@@ -72,40 +70,6 @@ func requireAuthAccess(extra map[string][]string, namespace, name string) error 
 		return status.InvalidTarget("authenticated access %s/%s does not match requested access %s/%s", authNamespace, authName, namespace, name)
 	}
 	return nil
-}
-
-func choosePod(pods []corev1.Pod) (corev1.Pod, bool) {
-	active := make([]corev1.Pod, 0, len(pods))
-	ready := make([]corev1.Pod, 0, len(pods))
-	for _, pod := range pods {
-		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			continue
-		}
-		active = append(active, pod)
-		if podReady(pod) {
-			ready = append(ready, pod)
-		}
-	}
-	candidates := active
-	if len(ready) > 0 {
-		candidates = ready
-	}
-	if len(candidates) == 0 {
-		return corev1.Pod{}, false
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Name < candidates[j].Name
-	})
-	return candidates[rand.Intn(len(candidates))], true
-}
-
-func podReady(pod corev1.Pod) bool {
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
 }
 
 func firstExtra(extra map[string][]string, key string) string {

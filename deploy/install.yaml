@@ -22,6 +22,9 @@ spec:
     - jsonPath: .status.selectedBackend
       name: SelectedBackend
       type: string
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -94,6 +97,7 @@ spec:
                             - sftp
                             - local_forward
                             - remote_forward
+                            - agent_forward
                             type: string
                           type: array
                           x-kubernetes-list-type: set
@@ -406,18 +410,44 @@ spec:
               session:
                 description: Session defines defaults used for shell and exec sessions.
                 properties:
+                  agentForwarding:
+                    description: |-
+                      AgentForwarding controls whether SSH agent forwarding may be requested for
+                      this Access. When omitted, kube-ssh uses the server-wide setting. Setting
+                      this field to true cannot enable agent forwarding when it is disabled
+                      server-wide; setting it to false disables agent forwarding for this Access.
+                    type: boolean
                   defaultShell:
                     description: |-
                       DefaultShell is used for shell sessions and as the shell for "sh -c" style
                       exec requests. When empty, kube-ssh should use its server default.
                     type: string
                   envAllowlist:
-                    description: EnvAllowlist controls SSH env requests for this access
-                      object.
+                    description: |-
+                      EnvAllowlist controls SSH client env requests for this access object.
+                      When omitted, kube-ssh uses the server-wide allowlist. When set to an
+                      empty list, no client env requests are allowed. Values are exact env names,
+                      prefix patterns ending in "*", or "*" for all names. This field can only
+                      narrow the server-wide allowlist.
                     items:
                       type: string
                     type: array
                     x-kubernetes-list-type: set
+                  idleTimeout:
+                    description: |-
+                      IdleTimeout is the maximum idle period for SSH connections using this
+                      Access. Client keepalives and SSH traffic may count as activity. This
+                      field can only narrow the server-wide idle timeout.
+                    format: duration
+                    type: string
+                  maxDuration:
+                    description: |-
+                      MaxDuration is the maximum lifetime for SSH connections using this Access.
+                      When exceeded, kube-ssh closes the whole SSH connection, including shell,
+                      exec, sftp, local-forward, and remote-forward channels. This field can
+                      only narrow the server-wide max duration.
+                    format: duration
+                    type: string
                 type: object
               strategy:
                 description: |-
@@ -437,7 +467,11 @@ spec:
                         minimum: 1
                         type: integer
                       type:
-                        description: Type chooses the affinity key.
+                        description: |-
+                          Type chooses the affinity key. SourceIP uses the remote address observed
+                          by the kube-ssh gateway; in Kubernetes this may be a node, load balancer,
+                          proxy, or NAT address instead of the real SSH client IP, so it should be
+                          treated as a best-effort hint only.
                         enum:
                         - User
                         - Credential
@@ -506,8 +540,9 @@ spec:
             description: AccessStatus is observed state for an Access.
             properties:
               conditions:
-                description: Conditions describe validation and readiness of this
-                  access object.
+                description: |-
+                  Conditions describe validation and readiness of this access object.
+                  Known condition types include Valid and Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -571,8 +606,10 @@ spec:
                 type: integer
               selectedBackend:
                 description: |-
-                  SelectedBackend is a compact human-readable summary of the last resolved
-                  backend.
+                  SelectedBackend is a compact human-readable summary of one currently
+                  selectable backend. It is intentionally deterministic for status display
+                  and may differ from the backend picked by Random or RoundRobin at
+                  connection time.
                 type: string
             type: object
         type: object
@@ -631,6 +668,8 @@ rules:
       - secrets
     verbs:
       - get
+      - list
+      - watch
   - apiGroups:
       - ssh.xiaoshiai.cn
     resources:
@@ -639,6 +678,14 @@ rules:
       - get
       - list
       - watch
+  - apiGroups:
+      - ssh.xiaoshiai.cn
+    resources:
+      - accesses/status
+    verbs:
+      - get
+      - update
+      - patch
   - apiGroups:
       - authorization.k8s.io
     resources:

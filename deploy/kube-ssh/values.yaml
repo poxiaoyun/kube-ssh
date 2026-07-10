@@ -49,6 +49,11 @@ kubeSsh:
     path: /usr/local/bin/kube-ssh-helper
     remoteDir: /tmp
 
+  ssh:
+    idleTimeout: ""
+    maxDuration: ""
+    agentForwarding: false
+
   accessPolicy:
     enabled: true
     namespace: ""

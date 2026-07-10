@@ -102,7 +102,7 @@ func NewFrameworkWithOptions(t *testing.T, opts FrameworkOptions) *Framework {
 	if !useExistingCluster() {
 		requireCommands(t, "kind")
 	}
-	requireFile(t, filepath.Join("..", "bin", "kube-ssh"))
+	requireFile(t, gatewayPath())
 	requireFile(t, helperPath())
 
 	suite := ensureE2ESuite(t)
@@ -189,6 +189,26 @@ func (f *Framework) ApplyManifest(manifest string) {
 	if err := applyManifest(f.Kubeconfig, manifest); err != nil {
 		f.T.Fatalf("apply manifest: %v", err)
 	}
+}
+
+func (f *Framework) InstallAccessCRD() {
+	f.T.Helper()
+	crdPath := filepath.Join("..", "deploy", "kube-ssh", "crds", "ssh.xiaoshiai.cn_accesses.yaml")
+	result := f.Kubectl("apply", "-f", crdPath)
+	if result.Code != 0 {
+		f.T.Fatalf("install Access CRD failed:\n%s", result.Dump())
+	}
+}
+
+func (f *Framework) WaitAccessReady(name string, timeout time.Duration) {
+	f.T.Helper()
+	timeoutArg := fmt.Sprintf("--timeout=%s", timeout)
+	result := f.Kubectl("-n", f.Namespace, "wait", "--for=condition=Ready", "access/"+name, timeoutArg)
+	if result.Code == 0 {
+		return
+	}
+	describe := f.Kubectl("-n", f.Namespace, "get", "access/"+name, "-o", "yaml")
+	f.T.Fatalf("access/%s not ready:\n%s\n%s", name, result.Dump(), describe.Dump())
 }
 
 func (f *Framework) WaitPodReady(name string, timeout time.Duration) {
@@ -530,7 +550,7 @@ func (f *Framework) startGateway() {
 	if f.Kubeconfig != "" {
 		args = append(args, "--kubeconfig", f.Kubeconfig)
 	}
-	cmd := exec.CommandContext(ctx, filepath.Join("..", "bin", "kube-ssh"), args...)
+	cmd := exec.CommandContext(ctx, gatewayPath(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -740,7 +760,13 @@ func requireFile(t *testing.T, path string) {
 }
 
 func useExistingCluster() bool {
-	return os.Getenv("KUBE_SSH_E2E_USE_EXISTING_CLUSTER") == "true"
+	if os.Getenv("KUBE_SSH_E2E_USE_KIND") == "true" {
+		return false
+	}
+	if value := os.Getenv("KUBE_SSH_E2E_USE_EXISTING_CLUSTER"); value != "" {
+		return value != "false"
+	}
+	return true
 }
 
 func kindEnv() map[string]string {
@@ -769,6 +795,17 @@ func helperPath() string {
 		return path
 	}
 	return filepath.Join("..", "bin", "e2e", "kube-ssh-helper-linux-"+runtimeGOARCH())
+}
+
+func gatewayPath() string {
+	if path := os.Getenv("KUBE_SSH_E2E_GATEWAY_PATH"); path != "" {
+		return path
+	}
+	currentBuild := filepath.Join("..", "bin", runtime.GOOS+"-"+runtime.GOARCH, "kube-ssh")
+	if _, err := os.Stat(currentBuild); err == nil {
+		return currentBuild
+	}
+	return filepath.Join("..", "bin", "kube-ssh")
 }
 
 func runtimeGOARCH() string {

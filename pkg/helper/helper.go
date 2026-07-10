@@ -9,6 +9,7 @@ const (
 	CapabilityChecksum      = "checksum"
 	CapabilityDial          = "dial"
 	CapabilityRemoteForward = "remote-forward"
+	CapabilityAgentForward  = "agent-forward"
 	CapabilitySFTP          = "sftp"
 	CapabilitySCP           = "scp"
 )
@@ -20,5 +21,5 @@ type Health struct {
 }
 
 func DefaultCapabilities() []string {
-	return []string{CapabilityHealth, CapabilityChecksum, CapabilityDial, CapabilityRemoteForward, CapabilitySFTP, CapabilitySCP}
+	return []string{CapabilityHealth, CapabilityChecksum, CapabilityDial, CapabilityRemoteForward, CapabilityAgentForward, CapabilitySFTP, CapabilitySCP}
 }

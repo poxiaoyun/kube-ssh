@@ -162,7 +162,15 @@ func (s *Server) proxyRemoteForwardConnection(ctx gossh.Context, conn *cryptossh
 		return
 	}
 	go cryptossh.DiscardRequests(reqs)
-	_ = ioproxy.Proxy(ctx, ch, stream)
+	_ = ioproxy.ProxyWithObserver(
+		ctx,
+		ch,
+		stream,
+		s.metricsRecorder(),
+		metrics.StreamKindRemoteForward,
+		metrics.StreamDirectionClientToBackend,
+		metrics.StreamDirectionBackendToClient,
+	)
 }
 
 func newRemoteForwardBind(host string, port uint32) remoteForwardBind {

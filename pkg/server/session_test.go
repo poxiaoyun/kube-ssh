@@ -1,11 +1,17 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"net"
 	"reflect"
 	"testing"
 
 	gossh "github.com/gliderlabs/ssh"
+	cryptossh "golang.org/x/crypto/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
+	"xiaoshiai.cn/kube-ssh/pkg/ioproxy"
 	"xiaoshiai.cn/kube-ssh/pkg/kube"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
@@ -119,6 +125,69 @@ func TestSessionAttributes(t *testing.T) {
 	}
 }
 
+func TestResolveSessionUsesEffectiveSessionPolicy(t *testing.T) {
+	ctx := newTestSSHContext()
+	WithSessionRequestType(ctx, "exec")
+	sess := &resolveSessionTestSession{
+		ctx:        ctx,
+		rawCommand: "locale",
+		command:    []string{"locale"},
+		env: []string{
+			"LANG=C",
+			"LC_TIME=C",
+			"SECRET=hidden",
+			"SSH_AUTH_SOCK=/tmp/client-agent.sock",
+		},
+		pty: gossh.Pty{
+			Term:   "xterm-256color",
+			Window: gossh.Window{Width: 120, Height: 40},
+		},
+		ptyOK: true,
+	}
+	sc := &sessionContext{
+		ctx:     ctx,
+		target:  targetFixturePtr(),
+		session: sess,
+		policy: effectiveSessionPolicy{
+			DefaultShell:        "/bin/bash",
+			globalEnvAllowlist:  []string{"*"},
+			accessEnvConfigured: true,
+			accessEnvAllowlist:  []string{"LANG", "SSH_AUTH_SOCK"},
+		},
+		agentForward: fakeSessionAgentForward{socketPath: "/tmp/kube-ssh-agent/agent.sock"},
+	}
+
+	spec, req, err := (&Server{}).resolveSession(sc)
+	if err != nil {
+		t.Fatalf("resolveSession() error = %v", err)
+	}
+	if spec.capability != authz.CapabilityExec {
+		t.Fatalf("capability = %q, want exec", spec.capability)
+	}
+	wantCommand := []string{
+		"env",
+		"LANG=C",
+		"SSH_AUTH_SOCK=/tmp/kube-ssh-agent/agent.sock",
+		"TERM=xterm-256color",
+		"/bin/bash",
+		"-c",
+		"locale",
+	}
+	if !reflect.DeepEqual(req.Command, wantCommand) {
+		t.Fatalf("command = %#v, want %#v", req.Command, wantCommand)
+	}
+	if !req.TTY {
+		t.Fatal("TTY = false, want true")
+	}
+	if req.TerminalSizeQueue == nil {
+		t.Fatal("TerminalSizeQueue = nil")
+	}
+	size := req.TerminalSizeQueue.Next()
+	if size == nil || size.Width != 120 || size.Height != 40 {
+		t.Fatalf("initial terminal size = %#v, want 120x40", size)
+	}
+}
+
 func targetFixture() target.Target {
 	return *kube.NewTarget("default", "nginx", "app")
 }
@@ -146,7 +215,7 @@ func TestWindowSizeQueue(t *testing.T) {
 }
 
 func TestFilterEnv(t *testing.T) {
-	got := filterEnv(
+	got := (effectiveSessionPolicy{globalEnvAllowlist: []string{"lang", "LC_*", "TERM_PROGRAM"}}).filterEnv(
 		[]string{
 			"LANG=en_US.UTF-8",
 			"LC_TIME=C",
@@ -154,7 +223,6 @@ func TestFilterEnv(t *testing.T) {
 			"PATH=/usr/bin",
 			"MALFORMED",
 		},
-		[]string{"lang", "LC_*", "TERM_PROGRAM"},
 	)
 	want := []string{
 		"LANG=en_US.UTF-8",
@@ -165,7 +233,84 @@ func TestFilterEnv(t *testing.T) {
 		t.Fatalf("filterEnv() = %#v, want %#v", got, want)
 	}
 
-	if got := filterEnv([]string{"LANG=C"}, nil); got != nil {
+	if got := (effectiveSessionPolicy{}).filterEnv([]string{"LANG=C"}); got != nil {
 		t.Fatalf("filterEnv() with empty allowlist = %#v, want nil", got)
 	}
 }
+
+type resolveSessionTestSession struct {
+	ctx        gossh.Context
+	rawCommand string
+	command    []string
+	env        []string
+	pty        gossh.Pty
+	ptyOK      bool
+	stderr     bytes.Buffer
+}
+
+func (s *resolveSessionTestSession) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (s *resolveSessionTestSession) Write(p []byte) (int, error) { return len(p), nil }
+
+func (s *resolveSessionTestSession) Close() error { return nil }
+
+func (s *resolveSessionTestSession) CloseWrite() error { return nil }
+
+func (s *resolveSessionTestSession) SendRequest(string, bool, []byte) (bool, error) {
+	return false, nil
+}
+
+func (s *resolveSessionTestSession) Stderr() io.ReadWriter { return &s.stderr }
+
+func (s *resolveSessionTestSession) User() string { return s.ctx.User() }
+
+func (s *resolveSessionTestSession) RemoteAddr() net.Addr { return s.ctx.RemoteAddr() }
+
+func (s *resolveSessionTestSession) LocalAddr() net.Addr { return s.ctx.LocalAddr() }
+
+func (s *resolveSessionTestSession) Environ() []string {
+	return append([]string(nil), s.env...)
+}
+
+func (s *resolveSessionTestSession) Exit(int) error { return nil }
+
+func (s *resolveSessionTestSession) Command() []string {
+	return append([]string(nil), s.command...)
+}
+
+func (s *resolveSessionTestSession) RawCommand() string { return s.rawCommand }
+
+func (s *resolveSessionTestSession) Subsystem() string { return "" }
+
+func (s *resolveSessionTestSession) PublicKey() gossh.PublicKey { return nil }
+
+func (s *resolveSessionTestSession) Context() gossh.Context { return s.ctx }
+
+func (s *resolveSessionTestSession) Permissions() gossh.Permissions {
+	return gossh.Permissions{}
+}
+
+func (s *resolveSessionTestSession) Pty() (gossh.Pty, <-chan gossh.Window, bool) {
+	ch := make(chan gossh.Window)
+	close(ch)
+	return s.pty, ch, s.ptyOK
+}
+
+func (s *resolveSessionTestSession) Signals(chan<- gossh.Signal) {}
+
+func (s *resolveSessionTestSession) Break(chan<- bool) {}
+
+var _ gossh.Session = (*resolveSessionTestSession)(nil)
+var _ cryptossh.Channel = (*resolveSessionTestSession)(nil)
+
+type fakeSessionAgentForward struct {
+	socketPath string
+}
+
+func (f fakeSessionAgentForward) SocketPath() string { return f.socketPath }
+
+func (f fakeSessionAgentForward) Accept(context.Context) (ioproxy.HalfCloser, error) {
+	return nil, io.EOF
+}
+
+func (f fakeSessionAgentForward) Close() error { return nil }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/helper"
@@ -38,10 +39,12 @@ type HelperCacheInvalidator interface {
 func (b *Backend) acquireHelper(ctx context.Context, tgt *target.Target, capability string) (HelperHandle, error) {
 	start := time.Now()
 	result := metrics.ResultSuccess
+	recorder := b.metrics
+	if recorder == nil {
+		recorder = metrics.NopRecorder{}
+	}
 	defer func() {
-		if b.metrics != nil {
-			b.metrics.HelperAcquireFinished(capability, result, time.Since(start))
-		}
+		recorder.HelperAcquireFinished(capability, result, time.Since(start))
 	}()
 	if b.helperProvider == nil {
 		result = metrics.ResultError
@@ -50,8 +53,39 @@ func (b *Backend) acquireHelper(ctx context.Context, tgt *target.Target, capabil
 	handle, err := b.helperProvider.Acquire(ctx, tgt, capability)
 	if err != nil {
 		result = metrics.ResultError
+		return nil, err
 	}
-	return handle, err
+	recorder.HelperAcquired(capability)
+	return &metricsHelperHandle{
+		next:       handle,
+		recorder:   recorder,
+		capability: capability,
+		acquiredAt: time.Now(),
+	}, nil
+}
+
+type metricsHelperHandle struct {
+	next       HelperHandle
+	recorder   metrics.Recorder
+	capability string
+	acquiredAt time.Time
+	released   atomic.Bool
+}
+
+func (h *metricsHelperHandle) Command(args ...string) []string {
+	return h.next.Command(args...)
+}
+
+func (h *metricsHelperHandle) Release(ctx context.Context) error {
+	err := h.next.Release(ctx)
+	if h.released.CompareAndSwap(false, true) {
+		result := metrics.ResultSuccess
+		if err != nil {
+			result = metrics.ResultError
+		}
+		h.recorder.HelperReleased(h.capability, result, time.Since(h.acquiredAt))
+	}
+	return err
 }
 
 // InvalidateHelper discards cached helper state for tgt when the configured

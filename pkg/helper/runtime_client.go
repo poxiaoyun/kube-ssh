@@ -20,6 +20,7 @@ type RuntimeClient struct {
 	conn httpstream.Connection
 
 	remoteForward *RemoteForwardClient
+	agentForward  *AgentForwardClient
 	closed        chan struct{}
 
 	closeOnce sync.Once
@@ -36,6 +37,13 @@ type RemoteForwardClient struct {
 	forwards map[string]*RemoteForward
 }
 
+type AgentForwardClient struct {
+	runtime *RuntimeClient
+
+	mu      sync.Mutex
+	forward *AgentForward
+}
+
 type RemoteForward struct {
 	client     *RemoteForwardClient
 	bind       string
@@ -47,6 +55,19 @@ type RemoteForward struct {
 	mu       sync.Mutex
 	cond     *sync.Cond
 	incoming []remoteForwardIncoming
+	closed   bool
+
+	cancelOnce sync.Once
+	cancelErr  error
+}
+
+type AgentForward struct {
+	client     *AgentForwardClient
+	socketPath string
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	incoming []httpstream.Stream
 	closed   bool
 
 	cancelOnce sync.Once
@@ -68,6 +89,7 @@ func NewRuntimeClient(ctx context.Context, stdin io.WriteCloser, stdout io.ReadC
 		closed: make(chan struct{}),
 	}
 	client.remoteForward = newRemoteForwardClient(client)
+	client.agentForward = newAgentForwardClient(client)
 
 	stdioConn := NewStdioConn(stdout, stdin, func() error {
 		_ = stdin.Close()
@@ -95,6 +117,10 @@ func NewRuntimeClient(ctx context.Context, stdin io.WriteCloser, stdout io.ReadC
 
 func (c *RuntimeClient) RemoteForward(ctx context.Context, host string, port uint32) (*RemoteForward, error) {
 	return c.remoteForward.Listen(ctx, host, port)
+}
+
+func (c *RuntimeClient) AgentForward(ctx context.Context) (*AgentForward, error) {
+	return c.agentForward.Listen(ctx)
 }
 
 func (c *RuntimeClient) call(ctx context.Context, requestType string, in any, out any) error {
@@ -153,6 +179,7 @@ func (c *RuntimeClient) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 		c.remoteForward.close()
+		c.agentForward.close()
 		if c.conn != nil {
 			c.closeErr = c.conn.Close()
 			if errors.Is(c.closeErr, io.ErrClosedPipe) {
@@ -174,6 +201,11 @@ func (c *RuntimeClient) newStreamHandler() httpstream.NewStreamHandler {
 			go func() {
 				<-replySent
 				c.remoteForward.dispatch(incoming)
+			}()
+		case StreamTypeAgentForwardConnection:
+			go func() {
+				<-replySent
+				c.agentForward.dispatch(stream)
 			}()
 		case StreamTypeControl:
 			return fmt.Errorf("helper must not create runtime control streams")
@@ -222,6 +254,140 @@ func newRemoteForwardClient(runtime *RuntimeClient) *RemoteForwardClient {
 		runtime:  runtime,
 		forwards: make(map[string]*RemoteForward),
 	}
+}
+
+func newAgentForwardClient(runtime *RuntimeClient) *AgentForwardClient {
+	return &AgentForwardClient{runtime: runtime}
+}
+
+func (c *AgentForwardClient) Listen(ctx context.Context) (*AgentForward, error) {
+	forward := newAgentForward(c)
+	c.mu.Lock()
+	if c.forward != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("agent-forward listener already exists")
+	}
+	c.forward = forward
+	c.mu.Unlock()
+
+	response := AgentForwardListenResponse{}
+	if err := c.runtime.call(ctx, ControlTypeAgentForwardListen, nil, &response); err != nil {
+		c.removeIfMatch(forward)
+		forward.closeLocal()
+		return nil, err
+	}
+	forward.socketPath = response.SocketPath
+	return forward, nil
+}
+
+func newAgentForward(client *AgentForwardClient) *AgentForward {
+	forward := &AgentForward{client: client}
+	forward.cond = sync.NewCond(&forward.mu)
+	return forward
+}
+
+func (c *AgentForwardClient) dispatch(stream httpstream.Stream) {
+	c.mu.Lock()
+	forward := c.forward
+	c.mu.Unlock()
+	if forward == nil {
+		c.runtime.closeStream(stream)
+		return
+	}
+	forward.deliver(stream)
+}
+
+func (c *AgentForwardClient) removeIfMatch(forward *AgentForward) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.forward == forward {
+		c.forward = nil
+	}
+}
+
+func (c *AgentForwardClient) close() {
+	c.mu.Lock()
+	forward := c.forward
+	c.forward = nil
+	c.mu.Unlock()
+	if forward != nil {
+		forward.closeLocal()
+	}
+}
+
+func (f *AgentForward) SocketPath() string {
+	return f.socketPath
+}
+
+func (f *AgentForward) Accept(ctx context.Context) (ioproxy.HalfCloser, error) {
+	ctxDone := context.AfterFunc(ctx, func() {
+		f.mu.Lock()
+		f.cond.Broadcast()
+		f.mu.Unlock()
+	})
+	defer ctxDone()
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for {
+		if len(f.incoming) > 0 {
+			stream := f.incoming[0]
+			copy(f.incoming, f.incoming[1:])
+			f.incoming = f.incoming[:len(f.incoming)-1]
+			return &remoteForwardStream{conn: f.client.runtime.conn, stream: stream}, nil
+		}
+		if f.closed {
+			return nil, fmt.Errorf("agent-forward canceled")
+		}
+		select {
+		case <-f.client.runtime.closed:
+			return nil, fmt.Errorf("helper runtime client closed")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		f.cond.Wait()
+	}
+}
+
+func (f *AgentForward) Cancel(ctx context.Context) error {
+	f.cancelOnce.Do(func() {
+		f.cancelErr = f.client.runtime.call(ctx, ControlTypeAgentForwardStop, nil, nil)
+		f.client.removeIfMatch(f)
+		f.closeLocal()
+	})
+	return f.cancelErr
+}
+
+func (f *AgentForward) deliver(stream httpstream.Stream) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		f.client.runtime.closeStream(stream)
+		return
+	}
+	select {
+	case <-f.client.runtime.closed:
+		f.client.runtime.closeStream(stream)
+		return
+	default:
+	}
+	f.incoming = append(f.incoming, stream)
+	f.cond.Signal()
+}
+
+func (f *AgentForward) closeLocal() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return
+	}
+	f.closed = true
+	for _, stream := range f.incoming {
+		f.client.runtime.closeStream(stream)
+	}
+	f.incoming = nil
+	f.cond.Broadcast()
 }
 
 func (c *RemoteForwardClient) Listen(ctx context.Context, host string, port uint32) (*RemoteForward, error) {

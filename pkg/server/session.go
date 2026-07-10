@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Server) handleSession(sess gossh.Session) {
-	if SessionRequestTypeFromContext(sess.Context()) == "exec" && isSCPCommand(sess.Command()) {
+	if requestTypeFromSession(sess) == "exec" && isSCPCommand(sess.Command()) {
 		s.handleSCP(sess)
 		return
 	}
@@ -46,21 +46,23 @@ func (s *Server) resolveSCP(sc *sessionContext) (operationSpec, error) {
 
 func (s *Server) resolveSession(sc *sessionContext) (operationSpec, backend.ExecRequest, error) {
 	sess := sc.session
-	ctx := sess.Context()
 
 	rawCmd := sess.RawCommand()
-	requestType := SessionRequestTypeFromContext(ctx)
+	requestType := requestTypeFromSession(sess)
 	capability, attrs := sessionAttributes(*sc.target, requestType, sess.Command(), rawCmd)
 
 	// Build env list: filtered client vars + TERM injection for PTY sessions.
 	ptyInfo, winCh, isPty := sess.Pty()
-	env := filterEnv(sess.Environ(), s.opts.EnvAllowlist)
+	env := sc.policy.filterEnv(sess.Environ())
+	if sc.agentForward != nil && sc.agentForward.SocketPath() != "" {
+		env = appendEnvOverride(env, sshAuthSockEnv, sc.agentForward.SocketPath())
+	}
 	if isPty && ptyInfo.Term != "" {
 		env = append(env, "TERM="+ptyInfo.Term)
 	}
 
 	// Build the full command argv, baking in env vars via env(1).
-	command := buildCommand(requestType == "exec", rawCmd, env, s.opts.DefaultShell)
+	command := buildCommand(requestType == "exec", rawCmd, env, sc.policy.DefaultShell)
 
 	req := backend.ExecRequest{
 		Target:  sc.target,
@@ -154,6 +156,27 @@ func buildCommand(isExec bool, rawCmd string, env []string, defaultShell string)
 	return append(argv, defaultShell)
 }
 
+func requestTypeFromSession(sess gossh.Session) string {
+	if typer, ok := sess.(sessionRequestTyper); ok {
+		if requestType := typer.SessionRequestType(); requestType != "" {
+			return requestType
+		}
+	}
+	return SessionRequestTypeFromContext(sess.Context())
+}
+
+func appendEnvOverride(env []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return append(result, prefix+value)
+}
+
 // windowSizeQueue adapts gliderlabs/ssh window events to backend.TerminalSizeQueue.
 // It sends the initial PTY size on the first Next() call, then blocks on the
 // channel for subsequent resize events.
@@ -178,34 +201,3 @@ func (q *windowSizeQueue) Next() *backend.TerminalSize {
 
 // filterEnv returns only the env entries whose key matches the allowlist.
 // Allowlist patterns ending with '*' are treated as prefixes.
-func filterEnv(envs, allowlist []string) []string {
-	if len(allowlist) == 0 {
-		return nil
-	}
-	var result []string
-	for _, env := range envs {
-		key, _, found := strings.Cut(env, "=")
-		if !found {
-			continue
-		}
-		if isEnvAllowed(key, allowlist) {
-			result = append(result, env)
-		}
-	}
-	return result
-}
-
-func isEnvAllowed(key string, allowlist []string) bool {
-	upper := strings.ToUpper(key)
-	for _, pattern := range allowlist {
-		p := strings.ToUpper(pattern)
-		if strings.HasSuffix(p, "*") {
-			if strings.HasPrefix(upper, p[:len(p)-1]) {
-				return true
-			}
-		} else if upper == p {
-			return true
-		}
-	}
-	return false
-}

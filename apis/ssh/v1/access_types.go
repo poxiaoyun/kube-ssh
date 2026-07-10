@@ -12,10 +12,12 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 //
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +genclient
+// +resourceName=accesses
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=acc
 // +kubebuilder:printcolumn:name="SelectedBackend",type=string,JSONPath=".status.selectedBackend"
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=".status.conditions[?(@.type=='Valid')].status"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 type Access struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -166,7 +168,10 @@ type AccessStrategyWeight struct {
 // AccessSessionAffinity describes the key used to reuse a previously selected
 // backend.
 type AccessSessionAffinity struct {
-	// Type chooses the affinity key.
+	// Type chooses the affinity key. SourceIP uses the remote address observed
+	// by the kube-ssh gateway; in Kubernetes this may be a node, load balancer,
+	// proxy, or NAT address instead of the real SSH client IP, so it should be
+	// treated as a best-effort hint only.
 	Type AccessSessionAffinityType `json:"type,omitempty"`
 
 	// TimeoutSeconds is the maximum age of an affinity entry. Omitted means the
@@ -188,16 +193,43 @@ const (
 	AccessSessionAffinityTypeSSHUser    AccessSessionAffinityType = "SSHUser"
 )
 
-// SessionPolicy defines session-level defaults.
+// SessionPolicy defines session-level defaults and limits.
 type SessionPolicy struct {
 	// DefaultShell is used for shell sessions and as the shell for "sh -c" style
 	// exec requests. When empty, kube-ssh should use its server default.
 	DefaultShell string `json:"defaultShell,omitempty"`
 
-	// EnvAllowlist controls SSH env requests for this access object.
+	// EnvAllowlist controls SSH client env requests for this access object.
+	// When omitted, kube-ssh uses the server-wide allowlist. When set to an
+	// empty list, no client env requests are allowed. Values are exact env names,
+	// prefix patterns ending in "*", or "*" for all names. This field can only
+	// narrow the server-wide allowlist.
 	//
 	// +listType=set
 	EnvAllowlist []string `json:"envAllowlist,omitempty"`
+
+	// IdleTimeout is the maximum idle period for SSH connections using this
+	// Access. Client keepalives and SSH traffic may count as activity. This
+	// field can only narrow the server-wide idle timeout.
+	//
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
+
+	// MaxDuration is the maximum lifetime for SSH connections using this Access.
+	// When exceeded, kube-ssh closes the whole SSH connection, including shell,
+	// exec, sftp, local-forward, and remote-forward channels. This field can
+	// only narrow the server-wide max duration.
+	//
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
+
+	// AgentForwarding controls whether SSH agent forwarding may be requested for
+	// this Access. When omitted, kube-ssh uses the server-wide setting. Setting
+	// this field to true cannot enable agent forwarding when it is disabled
+	// server-wide; setting it to false disables agent forwarding for this Access.
+	AgentForwarding *bool `json:"agentForwarding,omitempty"`
 }
 
 // AccessCredential is one accepted credential rule for this access object.
@@ -315,7 +347,7 @@ type CapabilityPolicy struct {
 
 // Capability is an SSH operation type.
 //
-// +kubebuilder:validation:Enum=shell;exec;scp;sftp;local_forward;remote_forward
+// +kubebuilder:validation:Enum=shell;exec;scp;sftp;local_forward;remote_forward;agent_forward
 type Capability string
 
 const (
@@ -325,6 +357,7 @@ const (
 	CapabilitySFTP          Capability = "sftp"
 	CapabilityLocalForward  Capability = "local_forward"
 	CapabilityRemoteForward Capability = "remote_forward"
+	CapabilityAgentForward  Capability = "agent_forward"
 )
 
 // LocalForwardPolicy restricts direct-tcpip requests.
@@ -357,13 +390,26 @@ type AccessStatus struct {
 	// controller or informer-backed validator.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// SelectedBackend is a compact human-readable summary of the last resolved
-	// backend.
+	// SelectedBackend is a compact human-readable summary of one currently
+	// selectable backend. It is intentionally deterministic for status display
+	// and may differ from the backend picked by Random or RoundRobin at
+	// connection time.
 	SelectedBackend string `json:"selectedBackend,omitempty"`
 
 	// Conditions describe validation and readiness of this access object.
+	// Known condition types include Valid and Ready.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+const (
+	// AccessConditionValid reports whether the Access spec and referenced local
+	// credential material are usable by kube-ssh.
+	AccessConditionValid = "Valid"
+
+	// AccessConditionReady reports whether the selected backend currently has
+	// at least one usable target.
+	AccessConditionReady = "Ready"
+)
 
 // AccessList contains a list of Access objects.
 //

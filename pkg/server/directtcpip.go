@@ -65,7 +65,15 @@ func (s *Server) handleDirectTCPIP(_ *gossh.Server, _ *cryptossh.ServerConn, new
 	go cryptossh.DiscardRequests(reqs)
 
 	slog.InfoContext(ctx, spec.name+" start", operationLogFields(sc, spec)...)
-	proxyErr := ioproxy.Proxy(sc.ctx, ch, remote)
+	proxyErr := ioproxy.ProxyWithObserver(
+		sc.ctx,
+		ch,
+		remote,
+		s.metricsRecorder(),
+		metrics.StreamKindDirectTCPIP,
+		metrics.StreamDirectionClientToBackend,
+		metrics.StreamDirectionBackendToClient,
+	)
 	sc.audit.Type = spec.name + "_end"
 	if proxyErr != nil {
 		sc.audit.Fields["error"] = proxyErr.Error()

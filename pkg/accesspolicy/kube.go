@@ -8,30 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 )
-
-type KubernetesSecretReader struct {
-	client kubernetes.Interface
-}
-
-func NewKubernetesSecretReader(client kubernetes.Interface) *KubernetesSecretReader {
-	return &KubernetesSecretReader{client: client}
-}
-
-func (r *KubernetesSecretReader) GetSecretValue(ctx context.Context, namespace, name, key string) (string, error) {
-	if r == nil || r.client == nil {
-		return "", fmt.Errorf("secret reader requires a kubernetes client")
-	}
-	secret, err := r.client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return "", err
-	}
-	value, ok := secret.Data[key]
-	if !ok {
-		return "", fmt.Errorf("secret %s/%s key %q not found", namespace, name, key)
-	}
-	return string(value), nil
-}
 
 type KubernetesPodLister struct {
 	client kubernetes.Interface
@@ -52,4 +30,30 @@ func (l *KubernetesPodLister) List(ctx context.Context, namespace string, select
 		return nil, err
 	}
 	return pods.Items, nil
+}
+
+type InformerPodLister struct {
+	indexer cache.Indexer
+}
+
+func NewInformerPodLister(indexer cache.Indexer) *InformerPodLister {
+	return &InformerPodLister{indexer: indexer}
+}
+
+func (l *InformerPodLister) List(_ context.Context, namespace string, selector map[string]string) ([]corev1.Pod, error) {
+	if l == nil || l.indexer == nil {
+		return nil, fmt.Errorf("pod lister requires a pod indexer")
+	}
+	out := []corev1.Pod{}
+	err := cache.ListAllByNamespace(l.indexer, namespace, labels.SelectorFromSet(selector), func(obj any) {
+		pod, ok := obj.(*corev1.Pod)
+		if !ok {
+			return
+		}
+		out = append(out, *pod.DeepCopy())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

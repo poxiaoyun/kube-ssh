@@ -91,12 +91,12 @@ func TestChainAuthorizeReturnsError(t *testing.T) {
 }
 
 func TestParseCapability(t *testing.T) {
-	capability, err := ParseCapability("sftp")
+	capability, err := ParseCapability("agent_forward")
 	if err != nil {
 		t.Fatalf("ParseCapability() error = %v", err)
 	}
-	if capability != CapabilitySFTP {
-		t.Fatalf("capability = %q, want sftp", capability)
+	if capability != CapabilityAgentForward {
+		t.Fatalf("capability = %q, want agent_forward", capability)
 	}
 	if _, err := ParseCapability("unknown"); err == nil {
 		t.Fatal("ParseCapability() error = nil, want error")

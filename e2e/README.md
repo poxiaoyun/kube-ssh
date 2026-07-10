@@ -2,16 +2,16 @@
 
 The E2E suite is guarded by the `e2e` build tag and exercises kube-ssh through real OpenSSH clients against a real Kubernetes cluster.
 
-Default usage creates a kind cluster named `kube-ssh-e2e`:
+Default usage reuses the cluster from the current kubeconfig:
 
 ```sh
 make test-e2e
 ```
 
-To reuse an existing cluster from the current kubeconfig:
+To create or reuse a kind cluster named `kube-ssh-e2e` instead:
 
 ```sh
-KUBE_SSH_E2E_USE_EXISTING_CLUSTER=true make test-e2e
+KUBE_SSH_E2E_USE_KIND=true make test-e2e
 ```
 
 Required commands:
@@ -21,11 +21,12 @@ Required commands:
 - `scp`
 - `sftp`
 - `ssh-keygen`
-- `kind`, unless `KUBE_SSH_E2E_USE_EXISTING_CLUSTER=true`
+- `kind`, only when `KUBE_SSH_E2E_USE_KIND=true`
 
-`make test-e2e` builds the gateway for the host OS and a Linux `kube-ssh-helper` for injection into kind pods. Override the helper path or architecture with:
+`make test-e2e` builds the gateway for the host OS and a Linux `kube-ssh-helper` for injection into test pods. Override the helper path or architecture with:
 
 ```sh
+KUBE_SSH_E2E_GATEWAY_PATH=/path/to/kube-ssh make test-e2e
 KUBE_SSH_E2E_HELPER_PATH=/path/to/kube-ssh-helper make test-e2e
 E2E_HELPER_GOARCH=arm64 make test-e2e
 KUBE_SSH_E2E_KIND_IMAGE=kindest/node:v1.31.0 make test-e2e

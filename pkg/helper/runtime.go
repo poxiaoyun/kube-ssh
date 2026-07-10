@@ -18,6 +18,7 @@ func RunRuntime(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	defer spdyConn.Close()
+	defer runtime.agentForward.close()
 	runtime.setConnection(spdyConn)
 	go spdyConn.Serve()
 
@@ -53,6 +54,7 @@ type runtimeServer struct {
 	conn httpstream.Connection
 
 	remoteForward *remoteForwardManager
+	agentForward  *agentForwardManager
 
 	done     chan error
 	doneOnce sync.Once
@@ -65,14 +67,18 @@ func newRuntime(ctx context.Context) *runtimeServer {
 		done:     make(chan error, 1),
 	}
 	runtime.remoteForward = newRemoteForwardManager(ctx, runtime.finish)
+	runtime.agentForward = newAgentForwardManager(ctx, runtime.finish)
 	runtime.handlers[ControlTypeRemoteForwardListen] = runtime.remoteForward.handleListen
 	runtime.handlers[ControlTypeRemoteForwardStop] = runtime.remoteForward.handleStop
+	runtime.handlers[ControlTypeAgentForwardListen] = runtime.agentForward.handleListen
+	runtime.handlers[ControlTypeAgentForwardStop] = runtime.agentForward.handleStop
 	return runtime
 }
 
 func (r *runtimeServer) setConnection(conn httpstream.Connection) {
 	r.conn = conn
 	r.remoteForward.setConnection(conn)
+	r.agentForward.setConnection(conn)
 }
 
 func (r *runtimeServer) finish(err error) {

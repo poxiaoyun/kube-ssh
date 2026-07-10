@@ -49,6 +49,8 @@ rules:
       - secrets
     verbs:
       - get
+      - list
+      - watch
   - apiGroups:
       - ssh.xiaoshiai.cn
     resources:
@@ -57,6 +59,14 @@ rules:
       - get
       - list
       - watch
+  - apiGroups:
+      - ssh.xiaoshiai.cn
+    resources:
+      - accesses/status
+    verbs:
+      - get
+      - update
+      - patch
   - apiGroups:
       - authorization.k8s.io
     resources:

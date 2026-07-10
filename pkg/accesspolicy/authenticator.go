@@ -9,18 +9,18 @@ import (
 )
 
 type Authenticator struct {
-	index *CredentialIndex
+	matcher CredentialMatcher
 }
 
-func NewAuthenticator(index *CredentialIndex) *Authenticator {
-	return &Authenticator{index: index}
+func NewAuthenticator(matcher CredentialMatcher) *Authenticator {
+	return &Authenticator{matcher: matcher}
 }
 
 func (a *Authenticator) AuthenticateBasic(ctx context.Context, _ string, password string) (*authn.AuthenticateInfo, error) {
-	if a == nil || a.index == nil {
-		return nil, fmt.Errorf("access policy authenticator requires a credential index")
+	if a == nil || a.matcher == nil {
+		return nil, fmt.Errorf("access policy authenticator requires a credential matcher")
 	}
-	match, err := a.index.MatchPassword(ctx, password)
+	match, err := a.matcher.MatchPassword(ctx, password)
 	if err != nil {
 		return nil, err
 	}
@@ -32,10 +32,10 @@ func (a *Authenticator) AuthenticateBasic(ctx context.Context, _ string, passwor
 }
 
 func (a *Authenticator) AuthenticatePublicKey(ctx context.Context, pubkey cryptossh.PublicKey) (*authn.AuthenticateInfo, error) {
-	if a == nil || a.index == nil {
-		return nil, fmt.Errorf("access policy authenticator requires a credential index")
+	if a == nil || a.matcher == nil {
+		return nil, fmt.Errorf("access policy authenticator requires a credential matcher")
 	}
-	match, err := a.index.MatchPublicKey(ctx, pubkey)
+	match, err := a.matcher.MatchPublicKey(ctx, pubkey)
 	if err != nil {
 		return nil, err
 	}
