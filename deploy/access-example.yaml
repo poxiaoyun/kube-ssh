@@ -1,0 +1,19 @@
+apiVersion: ssh.xiaoshiai.cn/v1
+kind: Access
+metadata:
+  name: notebook
+  namespace: default
+spec:
+  selector:
+    app: notebook
+  credentials:
+    - username: alice
+      groups:
+        - dev
+      passwords:
+        - dev-token
+      capabilities:
+        allow:
+          - shell
+          - exec
+          - sftp

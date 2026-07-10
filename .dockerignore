@@ -1,0 +1,5 @@
+.git
+deploy/*/charts
+deploy/*.tgz
+tmp
+*.log

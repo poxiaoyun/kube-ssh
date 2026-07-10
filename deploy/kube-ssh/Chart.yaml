@@ -1,0 +1,10 @@
+apiVersion: v2
+name: kube-ssh
+description: SSH gateway for Kubernetes Pods
+type: application
+version: 0.0.0
+appVersion: v0.0.0
+dependencies:
+  - name: common
+    version: 2.x.x
+    repository: oci://registry-1.docker.io/bitnamicharts

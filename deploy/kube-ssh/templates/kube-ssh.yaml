@@ -1,0 +1,222 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kube-ssh.fullname" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "kube-ssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- $deploymentAnnotations := merge (.Values.kubeSsh.deploymentAnnotations | default dict) (.Values.kubeSsh.commonAnnotations | default dict) }}
+  {{- if $deploymentAnnotations }}
+  annotations:
+    {{- toYaml $deploymentAnnotations | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.kubeSsh.replicaCount }}
+  revisionHistoryLimit: {{ .Values.kubeSsh.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "kube-ssh.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kube-ssh.selectorLabels" . | nindent 8 }}
+        {{- with .Values.kubeSsh.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.kubeSsh.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kube-ssh.serviceAccountName" . }}
+      {{- $imagePullSecrets := include "kube-ssh.imagePullSecrets" . }}
+      {{- if $imagePullSecrets }}
+      {{- $imagePullSecrets | nindent 6 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.kubeSsh.schedulerName }}
+      schedulerName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.kubeSsh.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kube-ssh
+          image: {{ include "kube-ssh.image" . | quote }}
+          imagePullPolicy: {{ .Values.kubeSsh.image.pullPolicy | quote }}
+          command:
+            - /usr/local/bin/kube-ssh
+          args:
+            - {{ printf "--listen-address=:%v" .Values.kubeSsh.containerPorts.ssh | quote }}
+            - {{ printf "--helper-path=%s" .Values.kubeSsh.helper.path | quote }}
+            - {{ printf "--helper-remote-dir=%s" .Values.kubeSsh.helper.remoteDir | quote }}
+            - {{ printf "--access-policy-enabled=%t" .Values.kubeSsh.accessPolicy.enabled | quote }}
+            {{- with .Values.kubeSsh.accessPolicy.namespace }}
+            - {{ printf "--access-policy-namespace=%s" . | quote }}
+            {{- end }}
+            - {{ printf "--authentication-anonymous=%t" .Values.kubeSsh.authentication.anonymous | quote }}
+            {{- range .Values.kubeSsh.authentication.authorizedKeys }}
+            - {{ printf "--authorized-key=%s" . | quote }}
+            {{- end }}
+            {{- range .Values.kubeSsh.authentication.passwords }}
+            - {{ printf "--authentication-password=%s" . | quote }}
+            {{- end }}
+            {{- $authenticationWebhookArgs := include "kube-ssh.webhookArgs" (dict "prefix" "authentication" "webhook" .Values.kubeSsh.authentication.webhook) }}
+            {{- if $authenticationWebhookArgs }}
+            {{- $authenticationWebhookArgs | nindent 12 }}
+            {{- end }}
+            - {{ printf "--authorization-allow-all=%t" .Values.kubeSsh.authorization.allowAll | quote }}
+            - {{ printf "--authorization-kubernetes-sar=%t" .Values.kubeSsh.authorization.kubernetesSAR | quote }}
+            {{- range .Values.kubeSsh.authorization.allow }}
+            - {{ printf "--authorization-allow=%s" . | quote }}
+            {{- end }}
+            {{- range .Values.kubeSsh.authorization.deny }}
+            - {{ printf "--authorization-deny=%s" . | quote }}
+            {{- end }}
+            {{- $authorizationWebhookArgs := include "kube-ssh.webhookArgs" (dict "prefix" "authorization" "webhook" .Values.kubeSsh.authorization.webhook) }}
+            {{- if $authorizationWebhookArgs }}
+            {{- $authorizationWebhookArgs | nindent 12 }}
+            {{- end }}
+            {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey }}
+            - {{ printf "--host-key-file=%s/%s" .Values.kubeSsh.hostKey.mountPath .Values.kubeSsh.hostKey.secretKey | quote }}
+            {{- end }}
+            {{- range .Values.kubeSsh.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: ssh
+              containerPort: {{ .Values.kubeSsh.containerPorts.ssh }}
+              protocol: TCP
+          {{- with .Values.kubeSsh.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kubeSsh.livenessProbe.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: ssh
+            initialDelaySeconds: {{ .Values.kubeSsh.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.kubeSsh.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.kubeSsh.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.kubeSsh.livenessProbe.failureThreshold }}
+            successThreshold: {{ .Values.kubeSsh.livenessProbe.successThreshold }}
+          {{- end }}
+          {{- if .Values.kubeSsh.readinessProbe.enabled }}
+          readinessProbe:
+            tcpSocket:
+              port: ssh
+            initialDelaySeconds: {{ .Values.kubeSsh.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.kubeSsh.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.kubeSsh.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.kubeSsh.readinessProbe.failureThreshold }}
+            successThreshold: {{ .Values.kubeSsh.readinessProbe.successThreshold }}
+          {{- end }}
+          {{- with .Values.kubeSsh.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.kubeSsh.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.kubeSsh.extraEnvVars }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.kubeSsh.extraEnvVarsCM .Values.kubeSsh.extraEnvVarsSecret }}
+          envFrom:
+            {{- with .Values.kubeSsh.extraEnvVarsCM }}
+            - configMapRef:
+                name: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.extraEnvVarsSecret }}
+            - secretRef:
+                name: {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey .Values.kubeSsh.extraVolumeMounts }}
+          volumeMounts:
+            {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey }}
+            - name: host-key
+              mountPath: {{ .Values.kubeSsh.hostKey.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.kubeSsh.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+        {{- with .Values.kubeSsh.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey .Values.kubeSsh.extraVolumes }}
+      volumes:
+        {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey }}
+        - name: host-key
+          secret:
+            secretName: {{ include "kube-ssh.hostKeySecretName" . }}
+            defaultMode: 0600
+        {{- end }}
+        {{- with .Values.kubeSsh.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kube-ssh.fullname" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "kube-ssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- $serviceAnnotations := merge (.Values.kubeSsh.service.annotations | default dict) (.Values.kubeSsh.commonAnnotations | default dict) }}
+  {{- if $serviceAnnotations }}
+  annotations:
+    {{- toYaml $serviceAnnotations | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.kubeSsh.service.type }}
+  {{- if or (eq .Values.kubeSsh.service.type "NodePort") (eq .Values.kubeSsh.service.type "LoadBalancer") }}
+  externalTrafficPolicy: {{ .Values.kubeSsh.service.externalTrafficPolicy }}
+  {{- end }}
+  {{- if and (eq .Values.kubeSsh.service.type "LoadBalancer") .Values.kubeSsh.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.kubeSsh.service.loadBalancerIP | quote }}
+  {{- end }}
+  {{- if and (eq .Values.kubeSsh.service.type "LoadBalancer") .Values.kubeSsh.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.kubeSsh.service.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  ports:
+    - name: ssh
+      port: {{ .Values.kubeSsh.service.ports.ssh }}
+      targetPort: ssh
+      protocol: TCP
+      {{- if and (or (eq .Values.kubeSsh.service.type "NodePort") (eq .Values.kubeSsh.service.type "LoadBalancer")) .Values.kubeSsh.service.nodePorts.ssh }}
+      nodePort: {{ .Values.kubeSsh.service.nodePorts.ssh }}
+      {{- end }}
+  selector:
+    {{- include "kube-ssh.selectorLabels" . | nindent 4 }}

@@ -1,0 +1,7 @@
+kube-ssh has been installed.
+
+Service:
+  {{ include "kube-ssh.fullname" . }}.{{ .Release.Namespace }}.svc
+
+SSH port:
+  {{ .Values.kubeSsh.service.ports.ssh }}

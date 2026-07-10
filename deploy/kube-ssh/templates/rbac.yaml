@@ -1,0 +1,86 @@
+{{- if .Values.kubeSsh.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kube-ssh.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "kube-ssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- $annotations := merge (.Values.kubeSsh.serviceAccount.annotations | default dict) (.Values.kubeSsh.commonAnnotations | default dict) }}
+  {{- if $annotations }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if .Values.kubeSsh.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kube-ssh.fullname" . }}
+  labels:
+    {{- include "kube-ssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- with .Values.kubeSsh.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/exec
+      - pods/portforward
+    verbs:
+      - create
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+  - apiGroups:
+      - ssh.xiaoshiai.cn
+    resources:
+      - accesses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kube-ssh.fullname" . }}
+  labels:
+    {{- include "kube-ssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- with .Values.kubeSsh.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kube-ssh.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kube-ssh.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace | quote }}
+{{- end }}
