@@ -6,6 +6,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
@@ -113,6 +114,20 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 	accessInformer := factory.Ssh().V1().Accesses()
 	store := accesspolicy.NewInformerStore(accessInformer.Lister(), opts.AccessPolicy.Namespace)
 	index := accesspolicy.NewCredentialIndex(store, accesspolicy.NewKubernetesSecretReader(kubeClient))
+	_, err = accessInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(any) {
+			index.Invalidate()
+		},
+		UpdateFunc: func(any, any) {
+			index.Invalidate()
+		},
+		DeleteFunc: func(any) {
+			index.Invalidate()
+		},
+	})
+	if err != nil {
+		return accessPolicyRuntime{}, err
+	}
 	return accessPolicyRuntime{
 		start: func(ctx context.Context) error {
 			factory.Start(ctx.Done())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +80,74 @@ func TestCredentialIndexIgnoresExternalAccess(t *testing.T) {
 
 	if _, err := index.MatchPassword(context.Background(), "token"); !errors.Is(err, authn.ErrNotProvided) {
 		t.Fatalf("MatchPassword() error = %v, want ErrNotProvided", err)
+	}
+}
+
+func TestCredentialIndexCachesSnapshotUntilInvalidated(t *testing.T) {
+	store := newCountingStore(accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token-a"}}, time.Unix(10, 0)))
+	index := NewCredentialIndex(store, nil, WithCredentialIndexMaxAge(0))
+
+	if _, err := index.MatchPassword(context.Background(), "token-a"); err != nil {
+		t.Fatalf("first MatchPassword() error = %v", err)
+	}
+	if _, err := index.MatchPassword(context.Background(), "token-a"); err != nil {
+		t.Fatalf("second MatchPassword() error = %v", err)
+	}
+	if got := store.ListCount(); got != 1 {
+		t.Fatalf("store List() calls = %d, want 1", got)
+	}
+
+	store.Set(accessFixture("default", "other", "bob", sshv1.Credential{Passwords: []string{"token-b"}}, time.Unix(20, 0)))
+	if _, err := index.MatchPassword(context.Background(), "token-b"); !errors.Is(err, authn.ErrNotProvided) {
+		t.Fatalf("MatchPassword() before invalidate error = %v, want ErrNotProvided", err)
+	}
+	if got := store.ListCount(); got != 1 {
+		t.Fatalf("store List() calls before invalidate = %d, want 1", got)
+	}
+
+	index.Invalidate()
+	match, err := index.MatchPassword(context.Background(), "token-b")
+	if err != nil {
+		t.Fatalf("MatchPassword() after invalidate error = %v", err)
+	}
+	if match.Credential.Username != "bob" {
+		t.Fatalf("matched username = %q, want bob", match.Credential.Username)
+	}
+	if got := store.ListCount(); got != 2 {
+		t.Fatalf("store List() calls after invalidate = %d, want 2", got)
+	}
+}
+
+func TestCredentialIndexRefreshesExpiredSnapshot(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := newCountingStore(accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token-a"}}, time.Unix(10, 0)))
+	index := NewCredentialIndex(store, nil,
+		WithCredentialIndexMaxAge(time.Second),
+		withCredentialIndexClock(func() time.Time { return now }),
+	)
+
+	if _, err := index.MatchPassword(context.Background(), "token-a"); err != nil {
+		t.Fatalf("first MatchPassword() error = %v", err)
+	}
+	store.Set(accessFixture("default", "other", "bob", sshv1.Credential{Passwords: []string{"token-b"}}, time.Unix(20, 0)))
+
+	if _, err := index.MatchPassword(context.Background(), "token-b"); !errors.Is(err, authn.ErrNotProvided) {
+		t.Fatalf("MatchPassword() before TTL error = %v, want ErrNotProvided", err)
+	}
+	if got := store.ListCount(); got != 1 {
+		t.Fatalf("store List() calls before TTL = %d, want 1", got)
+	}
+
+	now = now.Add(time.Second)
+	match, err := index.MatchPassword(context.Background(), "token-b")
+	if err != nil {
+		t.Fatalf("MatchPassword() after TTL error = %v", err)
+	}
+	if match.Credential.Username != "bob" {
+		t.Fatalf("matched username = %q, want bob", match.Credential.Username)
+	}
+	if got := store.ListCount(); got != 2 {
+		t.Fatalf("store List() calls after TTL = %d, want 2", got)
 	}
 }
 
@@ -203,6 +272,29 @@ func accessFixture(namespace, name, username string, credential sshv1.Credential
 			},
 		},
 	}
+}
+
+type countingStore struct {
+	*MemoryStore
+	mu    sync.Mutex
+	lists int
+}
+
+func newCountingStore(accesses ...*sshv1.Access) *countingStore {
+	return &countingStore{MemoryStore: NewMemoryStore(accesses...)}
+}
+
+func (s *countingStore) List(ctx context.Context) ([]*sshv1.Access, error) {
+	s.mu.Lock()
+	s.lists++
+	s.mu.Unlock()
+	return s.MemoryStore.List(ctx)
+}
+
+func (s *countingStore) ListCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lists
 }
 
 type fakeSecretReader map[string]string

@@ -6,26 +6,80 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	cryptossh "golang.org/x/crypto/ssh"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 )
 
+const defaultCredentialIndexMaxAge = 10 * time.Second
+
+type CredentialIndexOption func(*CredentialIndex)
+
 type CredentialIndex struct {
-	store   Store
-	secrets SecretReader
+	store    Store
+	secrets  SecretReader
+	maxAge   time.Duration
+	now      func() time.Time
+	mu       sync.RWMutex
+	snapshot *credentialSnapshot
+	syncedAt time.Time
+	dirty    bool
 }
 
-func NewCredentialIndex(store Store, secrets SecretReader) *CredentialIndex {
-	return &CredentialIndex{store: store, secrets: secrets}
+func NewCredentialIndex(store Store, secrets SecretReader, opts ...CredentialIndexOption) *CredentialIndex {
+	index := &CredentialIndex{
+		store:   store,
+		secrets: secrets,
+		maxAge:  defaultCredentialIndexMaxAge,
+		now:     time.Now,
+		dirty:   true,
+	}
+	for _, opt := range opts {
+		opt(index)
+	}
+	if index.now == nil {
+		index.now = time.Now
+	}
+	return index
+}
+
+// WithCredentialIndexMaxAge sets how long a built snapshot may be reused before
+// it is refreshed. A value less than or equal to zero means snapshots are only
+// refreshed when Invalidate or Refresh is called.
+func WithCredentialIndexMaxAge(maxAge time.Duration) CredentialIndexOption {
+	return func(index *CredentialIndex) {
+		index.maxAge = maxAge
+	}
+}
+
+func withCredentialIndexClock(now func() time.Time) CredentialIndexOption {
+	return func(index *CredentialIndex) {
+		index.now = now
+	}
+}
+
+func (i *CredentialIndex) Invalidate() {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.dirty = true
+}
+
+func (i *CredentialIndex) Refresh(ctx context.Context) error {
+	_, err := i.getSnapshot(ctx, true)
+	return err
 }
 
 func (i *CredentialIndex) MatchPassword(ctx context.Context, token string) (*CredentialMatch, error) {
 	if token == "" {
 		return nil, authn.ErrNotProvided
 	}
-	snapshot, err := i.snapshot(ctx)
+	snapshot, err := i.getSnapshot(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +92,7 @@ func (i *CredentialIndex) MatchPublicKey(ctx context.Context, pubkey cryptossh.P
 		return nil, authn.ErrNotProvided
 	}
 	fingerprint := cryptossh.FingerprintSHA256(pubkey)
-	snapshot, err := i.snapshot(ctx)
+	snapshot, err := i.getSnapshot(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -51,10 +105,46 @@ type credentialSnapshot struct {
 	publicKeys map[string][]*CredentialMatch
 }
 
-func (i *CredentialIndex) snapshot(ctx context.Context) (*credentialSnapshot, error) {
+func (i *CredentialIndex) getSnapshot(ctx context.Context, force bool) (*credentialSnapshot, error) {
 	if i == nil || i.store == nil {
 		return nil, fmt.Errorf("credential index requires a store")
 	}
+	now := i.now()
+	if !force {
+		i.mu.RLock()
+		if i.snapshot != nil && !i.dirty && !i.expired(now) {
+			snapshot := i.snapshot
+			i.mu.RUnlock()
+			return snapshot, nil
+		}
+		i.mu.RUnlock()
+	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	now = i.now()
+	if !force && i.snapshot != nil && !i.dirty && !i.expired(now) {
+		return i.snapshot, nil
+	}
+
+	snapshot, err := i.buildSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	i.snapshot = snapshot
+	i.syncedAt = now
+	i.dirty = false
+	return snapshot, nil
+}
+
+func (i *CredentialIndex) expired(now time.Time) bool {
+	if i.maxAge <= 0 || i.syncedAt.IsZero() {
+		return false
+	}
+	return now.Sub(i.syncedAt) >= i.maxAge
+}
+
+func (i *CredentialIndex) buildSnapshot(ctx context.Context) (*credentialSnapshot, error) {
 	accesses, err := i.store.List(ctx)
 	if err != nil {
 		return nil, err
