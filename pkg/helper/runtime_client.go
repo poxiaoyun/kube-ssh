@@ -139,18 +139,24 @@ func (c *RuntimeClient) call(ctx context.Context, requestType string, in any, ou
 	}
 
 	result := readRuntimeResponse(stream)
-	select {
-	case got := <-result:
+	decodeResult := func(got runtimeCallResult) error {
 		if got.err != nil {
 			return got.err
 		}
 		return decodeRuntimeResponse(requestType, got.response, out)
+	}
+	select {
+	case got := <-result:
+		return decodeResult(got)
 	case <-ctx.Done():
 		_ = stream.Close()
 		return ctx.Err()
 	case <-c.closed:
-		_ = stream.Close()
-		return fmt.Errorf("helper runtime client closed")
+		got := <-result
+		if got.err != nil {
+			return fmt.Errorf("helper runtime client closed")
+		}
+		return decodeResult(got)
 	}
 }
 
