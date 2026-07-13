@@ -106,6 +106,34 @@ func TestPolicyCacheIgnoresExternalAccess(t *testing.T) {
 	}
 }
 
+func TestPolicyCacheMatchesGatewayClassExactly(t *testing.T) {
+	className := "default-gateway"
+	classed := accessFixture("default", "classed", "alice", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(10, 0))
+	classed.Spec.GatewayClassName = &className
+	classless := accessFixture("default", "default", "bob", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(20, 0))
+
+	classedCache := newTestPolicyCacheForGateway(t, "", className, []*sshv1.Access{classless, classed}, nil)
+	match, err := classedCache.MatchPassword(context.Background(), "shared")
+	if err != nil {
+		t.Fatalf("MatchPassword() error = %v", err)
+	}
+	if match.Access.Name != "classed" {
+		t.Fatalf("matched Access = %q, want classed", match.Access.Name)
+	}
+	if _, err := classedCache.Get(context.Background(), "default", "default"); err == nil {
+		t.Fatal("Get() error = nil for classless Access on classed gateway")
+	}
+
+	defaultCache := newTestPolicyCacheForGateway(t, "", "", []*sshv1.Access{classless, classed}, nil)
+	match, err = defaultCache.MatchPassword(context.Background(), "shared")
+	if err != nil {
+		t.Fatalf("classless MatchPassword() error = %v", err)
+	}
+	if match.Access.Name != "default" {
+		t.Fatalf("matched Access = %q, want default", match.Access.Name)
+	}
+}
+
 func TestPolicyCacheSecretMustBeReferenced(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{
 		PasswordsFrom: []sshv1.LocalSecretKeyRef{{Name: "access", Key: "passwords"}},
@@ -526,6 +554,9 @@ func TestAccessStatusControllerReportsReadyBackend(t *testing.T) {
 		newTestInformerPodLister(t, readyPod("notebook-a", map[string]string{"app": "notebook"})),
 		policyCache.secretIndexer,
 		nil,
+		AccessStatusControllerOptions{
+			Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"},
+		},
 	)
 
 	status := controller.statusFor(context.Background(), access)
@@ -540,6 +571,34 @@ func TestAccessStatusControllerReportsReadyBackend(t *testing.T) {
 	}
 }
 
+func TestAccessStatusControllerPublishesGatewayEndpoints(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
+	advertised := []sshv1.AccessStatusEndpoint{
+		{Address: "ssh-a.example.com:2222"},
+		{Address: "ssh-b.example.com:2222"},
+	}
+	want := []sshv1.AccessStatusEndpoint{
+		{Address: "ssh-a.example.com:2222", Username: "default.notebook"},
+		{Address: "ssh-b.example.com:2222", Username: "default.notebook"},
+	}
+	controller := NewAccessStatusController(
+		policyCache,
+		newTestInformerPodLister(t, readyPod("notebook-a", map[string]string{"app": "notebook"})),
+		policyCache.secretIndexer,
+		nil,
+		AccessStatusControllerOptions{
+			Policy:    ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"},
+			Endpoints: advertised,
+		},
+	)
+
+	status := controller.statusFor(context.Background(), access)
+	if !reflect.DeepEqual(status.Endpoints, want) {
+		t.Fatalf("Endpoints = %#v, want %#v", status.Endpoints, want)
+	}
+}
+
 func TestAccessStatusControllerReportsMissingSecret(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{
 		PasswordsFrom: []sshv1.LocalSecretKeyRef{{Name: "missing", Key: "passwords"}},
@@ -550,6 +609,9 @@ func TestAccessStatusControllerReportsMissingSecret(t *testing.T) {
 		newTestInformerPodLister(t, readyPod("notebook-a", map[string]string{"app": "notebook"})),
 		policyCache.secretIndexer,
 		nil,
+		AccessStatusControllerOptions{
+			Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"},
+		},
 	)
 
 	status := controller.statusFor(context.Background(), access)
@@ -572,7 +634,9 @@ func TestAccessStatusControllerAppliesGlobalContainerPolicy(t *testing.T) {
 		newTestInformerPodLister(t, readyPod("notebook-a", map[string]string{"app": "notebook"})),
 		policyCache.secretIndexer,
 		nil,
-		ContainerPolicy{DefaultMode: "None", LimitMode: "All"},
+		AccessStatusControllerOptions{
+			Policy: ContainerPolicy{DefaultMode: "None", LimitMode: "All"},
+		},
 	)
 
 	status := controller.statusFor(context.Background(), access)
@@ -625,6 +689,10 @@ func secretFixture(namespace, name string, data map[string]string) *corev1.Secre
 }
 
 func newTestPolicyCache(t *testing.T, namespace string, accesses []*sshv1.Access, secrets []*corev1.Secret) *PolicyCache {
+	return newTestPolicyCacheForGateway(t, namespace, "", accesses, secrets)
+}
+
+func newTestPolicyCacheForGateway(t *testing.T, namespace, gatewayClassName string, accesses []*sshv1.Access, secrets []*corev1.Secret) *PolicyCache {
 	t.Helper()
 	accessIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, AccessPolicyIndexers())
 	for _, access := range accesses {
@@ -638,7 +706,10 @@ func newTestPolicyCache(t *testing.T, namespace string, accesses []*sshv1.Access
 			t.Fatalf("add secret %s/%s: %v", secret.Namespace, secret.Name, err)
 		}
 	}
-	return NewPolicyCache(accessIndexer, secretIndexer, namespace)
+	return NewPolicyCache(accessIndexer, secretIndexer, PolicyCacheOptions{
+		Namespace:        namespace,
+		GatewayClassName: gatewayClassName,
+	})
 }
 
 func newTestInformerPodLister(t *testing.T, pods ...corev1.Pod) *InformerPodLister {

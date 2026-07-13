@@ -221,6 +221,16 @@ The Access username formats are:
 - `namespace.access`
 - `namespace.access.container`
 
+Gateways may be partitioned by class. A gateway configured with
+`--gateway-class-name=default-gateway` only handles Access objects whose
+`spec.gatewayClassName` is `default-gateway`; a classless gateway only handles classless
+Access objects. Publish one or more externally reachable addresses with
+`--advertise-address=host:port`. The owning gateway reports them as structured
+entries under `status.endpoints`.
+
+Each status endpoint contains the advertised `address` and the Access target
+`username`, so clients do not need to reconstruct kube-ssh locator rules.
+
 > User identity is derived from the matching public key or password token, not
 > from the SSH username. Credential values are expected to be unique. For a
 > duplicate, kube-ssh deterministically uses the oldest Access and logs a

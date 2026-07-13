@@ -33,6 +33,26 @@ func TestLoadEnv(t *testing.T) {
 	}
 }
 
+func TestLoadEnvGatewayConfiguration(t *testing.T) {
+	t.Setenv("GATEWAY_CLASS_NAME", "public")
+	t.Setenv("ADVERTISE_ADDRESS", "ssh-a.example.com:2222 ssh-b.example.com:2222")
+	var gatewayClassName string
+	var advertiseAddresses []string
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flags.StringVar(&gatewayClassName, "gateway-class-name", "", "")
+	flags.StringArrayVar(&advertiseAddresses, "advertise-address", nil, "")
+
+	if err := loadEnv(flags); err != nil {
+		t.Fatalf("loadEnv() error = %v", err)
+	}
+	if gatewayClassName != "public" {
+		t.Fatalf("gateway class = %q, want public", gatewayClassName)
+	}
+	if len(advertiseAddresses) != 2 || advertiseAddresses[0] != "ssh-a.example.com:2222" || advertiseAddresses[1] != "ssh-b.example.com:2222" {
+		t.Fatalf("advertise addresses = %#v", advertiseAddresses)
+	}
+}
+
 func TestLoadEnvPreservesQuotedSliceValue(t *testing.T) {
 	t.Setenv("AUTHORIZED_KEY", `"alice=ssh-ed25519 AAAA comment"`)
 	var keys []string

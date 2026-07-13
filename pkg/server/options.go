@@ -9,16 +9,18 @@ import (
 
 // Options configures the kube-ssh server.
 type Options struct {
-	ListenAddress  string                `json:"listenAddress,omitempty"`
-	HostKeyFile    string                `json:"hostKeyFile,omitempty"`
-	Kubeconfig     string                `json:"kubeconfig,omitempty"`
-	Helper         HelperOptions         `json:"helper,omitempty"`
-	AccessPolicy   AccessPolicyOptions   `json:"accessPolicy,omitempty"`
-	Policy         PolicyOptions         `json:"policy,omitempty"`
-	Metrics        MetricsOptions        `json:"metrics,omitempty"`
-	Audit          AuditOptions          `json:"audit,omitempty"`
-	Authentication AuthenticationOptions `json:"authentication,omitempty"`
-	Authorization  AuthorizationOptions  `json:"authorization,omitempty"`
+	ListenAddress      string                `json:"listenAddress,omitempty"`
+	GatewayClassName   string                `json:"gatewayClassName,omitempty"`
+	AdvertiseAddresses []string              `json:"advertiseAddresses,omitempty"`
+	HostKeyFile        string                `json:"hostKeyFile,omitempty"`
+	Kubeconfig         string                `json:"kubeconfig,omitempty"`
+	Helper             HelperOptions         `json:"helper,omitempty"`
+	AccessPolicy       AccessPolicyOptions   `json:"accessPolicy,omitempty"`
+	Policy             PolicyOptions         `json:"policy,omitempty"`
+	Metrics            MetricsOptions        `json:"metrics,omitempty"`
+	Audit              AuditOptions          `json:"audit,omitempty"`
+	Authentication     AuthenticationOptions `json:"authentication,omitempty"`
+	Authorization      AuthorizationOptions  `json:"authorization,omitempty"`
 }
 
 type PolicyOptions struct {

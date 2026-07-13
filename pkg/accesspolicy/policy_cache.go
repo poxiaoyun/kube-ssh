@@ -24,16 +24,23 @@ const (
 )
 
 type PolicyCache struct {
-	accessIndexer cache.Indexer
-	secretIndexer cache.Indexer
-	namespace     string
+	accessIndexer    cache.Indexer
+	secretIndexer    cache.Indexer
+	namespace        string
+	gatewayClassName string
 }
 
-func NewPolicyCache(accessIndexer, secretIndexer cache.Indexer, namespace string) *PolicyCache {
+type PolicyCacheOptions struct {
+	Namespace        string
+	GatewayClassName string
+}
+
+func NewPolicyCache(accessIndexer, secretIndexer cache.Indexer, options PolicyCacheOptions) *PolicyCache {
 	return &PolicyCache{
-		accessIndexer: accessIndexer,
-		secretIndexer: secretIndexer,
-		namespace:     namespace,
+		accessIndexer:    accessIndexer,
+		secretIndexer:    secretIndexer,
+		namespace:        options.Namespace,
+		gatewayClassName: options.GatewayClassName,
 	}
 }
 
@@ -71,6 +78,9 @@ func (c *PolicyCache) Get(_ context.Context, namespace, name string) (*sshv1.Acc
 	if !ok {
 		return nil, fmt.Errorf("access cache object %s/%s has unexpected type %T", namespace, name, obj)
 	}
+	if !c.acceptAccess(access) {
+		return nil, fmt.Errorf("access %s/%s is not managed by gateway class %q", namespace, name, c.gatewayClassName)
+	}
 	return access.DeepCopy(), nil
 }
 
@@ -86,6 +96,9 @@ func (c *PolicyCache) List(context.Context) ([]*sshv1.Access, error) {
 			return nil, fmt.Errorf("access cache object has unexpected type %T", obj)
 		}
 		if c.namespace != "" && access.Namespace != c.namespace {
+			continue
+		}
+		if !c.acceptAccess(access) {
 			continue
 		}
 		accesses = append(accesses, access.DeepCopy())
@@ -291,7 +304,17 @@ func (c *PolicyCache) acceptAccess(access *sshv1.Access) bool {
 	if !isPodAccess(access) {
 		return false
 	}
-	return c.namespace == "" || access.Namespace == c.namespace
+	if c.namespace != "" && access.Namespace != c.namespace {
+		return false
+	}
+	return gatewayClassName(access) == c.gatewayClassName
+}
+
+func gatewayClassName(access *sshv1.Access) string {
+	if access == nil || access.Spec.GatewayClassName == nil {
+		return ""
+	}
+	return *access.Spec.GatewayClassName
 }
 
 func (c *PolicyCache) acceptSecret(secret *corev1.Secret) bool {

@@ -52,6 +52,30 @@ func TestValidatePolicyOptions(t *testing.T) {
 	if err := validatePolicyOptions(opts); err == nil {
 		t.Fatal("validatePolicyOptions() error = nil for invalid bind")
 	}
+	opts = NewDefaultOptions()
+	opts.GatewayClassName = "Invalid Class"
+	if err := validatePolicyOptions(opts); err == nil {
+		t.Fatal("validatePolicyOptions() error = nil for invalid gateway class")
+	}
+	opts = NewDefaultOptions()
+	opts.AdvertiseAddresses = []string{"ssh.example.com"}
+	if err := validatePolicyOptions(opts); err == nil {
+		t.Fatal("validatePolicyOptions() error = nil for advertise address without port")
+	}
+}
+
+func TestAdvertisedAccessEndpoints(t *testing.T) {
+	got, err := advertisedAccessEndpoints([]string{
+		" ssh.example.com:2222 ",
+		"ssh.example.com:2222",
+		"[2001:db8::1]:22",
+	})
+	if err != nil {
+		t.Fatalf("advertisedAccessEndpoints() error = %v", err)
+	}
+	if len(got) != 2 || got[0].Address != "ssh.example.com:2222" || got[1].Address != "[2001:db8::1]:22" {
+		t.Fatalf("endpoints = %#v", got)
+	}
 }
 
 func TestBuildAuthorizerStaticPolicyOverridesAllowAll(t *testing.T) {

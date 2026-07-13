@@ -180,6 +180,42 @@ var _ = Describe("Access policy runtime", func() {
 			g.Expect(access.Status.ObservedGeneration).To(Equal(access.Generation))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
+
+	It("isolates gateway classes and publishes the owning gateway endpoints", func() {
+		ns := createEnvtestNamespace()
+		runtime := startEnvtestAccessPolicyRuntimeForGateway(ns, "default-gateway", []string{
+			"ssh-a.example.com:2222",
+			"[2001:db8::1]:22",
+		})
+
+		createEnvtestReadyPod(ns, "public-access-pod", map[string]string{"app": "public-access"})
+		className := "default-gateway"
+		classed := envtestAccess(ns, "public-access", "alice", v1.Credential{Passwords: []string{"public-token"}})
+		classed.Spec.GatewayClassName = &className
+		_, err := envtestAccessClient.SshV1().Accesses(ns).Create(context.Background(), classed, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		createEnvtestAccess(ns, "classless-access", "bob", v1.Credential{Passwords: []string{"classless-token"}})
+
+		EventuallyBasicAuth(runtime, "public-token").Should(SucceedWithUser("alice"))
+		ConsistentlyBasicAuth(runtime, "classless-token").Should(FailWithAuthError(authn.ErrNotProvided))
+
+		Eventually(func(g Gomega) {
+			access, err := envtestAccessClient.SshV1().Accesses(ns).Get(context.Background(), "public-access", metav1.GetOptions{})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(access.Status.Endpoints).To(Equal([]v1.AccessStatusEndpoint{
+				{Address: "ssh-a.example.com:2222", Username: ns + ".public-access"},
+				{Address: "[2001:db8::1]:22", Username: ns + ".public-access"},
+			}))
+			g.Expect(envtestConditionStatus(access.Status.Conditions, v1.AccessConditionReady)).To(Equal(metav1.ConditionTrue))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		Consistently(func(g Gomega) {
+			access, err := envtestAccessClient.SshV1().Accesses(ns).Get(context.Background(), "classless-access", metav1.GetOptions{})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(access.Status.ObservedGeneration).To(BeZero())
+			g.Expect(access.Status.Endpoints).To(BeEmpty())
+		}, time.Second, 100*time.Millisecond).Should(Succeed())
+	})
 })
 
 var _ = Describe("Access CRD schema", func() {
@@ -229,6 +265,17 @@ var _ = Describe("Access CRD schema", func() {
 		Expect(created.Spec.Session).NotTo(BeNil())
 		Expect(created.Spec.Session.IdleTimeout.Duration).To(Equal(30 * time.Minute))
 		Expect(created.Spec.Session.MaxDuration.Duration).To(Equal(8 * time.Hour))
+	})
+
+	It("rejects invalid gateway class names", func() {
+		ns := createEnvtestNamespace()
+		access := envtestAccess(ns, "invalid-class", "alice", v1.Credential{Passwords: []string{"token"}})
+		className := "Invalid Class"
+		access.Spec.GatewayClassName = &className
+
+		_, err := envtestAccessClient.SshV1().Accesses(ns).Create(context.Background(), access, metav1.CreateOptions{})
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
 	})
 
 	It("accepts container and forwarding policies", func() {

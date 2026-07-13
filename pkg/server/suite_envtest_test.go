@@ -64,11 +64,17 @@ var _ = AfterSuite(func() {
 })
 
 func startEnvtestAccessPolicyRuntime(namespace string) accessPolicyRuntime {
+	return startEnvtestAccessPolicyRuntimeForGateway(namespace, "", nil)
+}
+
+func startEnvtestAccessPolicyRuntimeForGateway(namespace, gatewayClassName string, advertiseAddresses []string) accessPolicyRuntime {
 	GinkgoHelper()
 
 	opts := NewDefaultOptions()
 	opts.AccessPolicy.Enabled = true
 	opts.AccessPolicy.Namespace = namespace
+	opts.GatewayClassName = gatewayClassName
+	opts.AdvertiseAddresses = append([]string(nil), advertiseAddresses...)
 
 	kubeClient, err := kubernetes.NewForConfig(envtestConfig)
 	Expect(err).NotTo(HaveOccurred())

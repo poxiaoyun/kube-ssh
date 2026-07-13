@@ -33,6 +33,15 @@ type Access struct {
 // +kubebuilder:validation:XValidation:rule="self.type != 'External' || has(self.endpoints)",message="endpoints is required when type is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.selector) && has(self.endpoints))",message="selector and endpoints are mutually exclusive"
 type AccessSpec struct {
+	// GatewayClassName selects the kube-ssh gateway class that owns this Access.
+	// Omitted selects the default (classless) gateway. Gateways only process
+	// Access objects whose class exactly matches their configured class.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	GatewayClassName *string `json:"gatewayClassName,omitempty"`
+
 	// Type determines what this Access selects. Defaults to Pod.
 	//
 	// +kubebuilder:default=Pod
@@ -405,9 +414,25 @@ type AccessStatus struct {
 	// connection time.
 	SelectedBackend string `json:"selectedBackend,omitempty"`
 
+	// Endpoints are gateway-advertised SSH connection targets for this Access.
+	// Address values use host:port form and Username contains the Access locator.
+	//
+	// +listType=map
+	// +listMapKey=address
+	Endpoints []AccessStatusEndpoint `json:"endpoints,omitempty"`
+
 	// Conditions describe validation and readiness of this access object.
 	// Known condition types include Valid and Ready.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// AccessStatusEndpoint is one address advertised by the owning gateway.
+type AccessStatusEndpoint struct {
+	// Address is a DNS name or IP plus port. IPv6 addresses must be bracketed.
+	Address string `json:"address"`
+
+	// Username is the SSH target locator for this Access.
+	Username string `json:"username"`
 }
 
 const (

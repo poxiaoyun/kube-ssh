@@ -18,6 +18,14 @@ kubeSsh:
   replicaCount: 1
   revisionHistoryLimit: 10
 
+  # Optional class used to select Access objects. Empty handles only classless Access objects.
+  gatewayClassName: ""
+
+  # Publicly reachable gateway addresses published to matching Access status.
+  # Each entry must use host:port form; IPv6 addresses must be bracketed.
+  # Example: ["ssh.example.com:2222"]
+  advertiseAddresses: []
+
   containerPorts:
     ssh: 22
     metrics: 8080
@@ -47,6 +55,8 @@ kubeSsh:
   hostKey:
     existingSecret: ""
     secretKey: ssh_host_key
+    # Optional inline private key for operator-managed deployments.
+    # existingSecret takes precedence; leave both empty to generate and persist an Ed25519 key.
     privateKey: ""
     mountPath: /etc/kube-ssh/host-key
 

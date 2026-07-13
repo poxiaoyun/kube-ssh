@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -124,6 +127,14 @@ func validatePolicyOptions(opts *Options) error {
 	if opts == nil {
 		return fmt.Errorf("options are required")
 	}
+	if opts.GatewayClassName != "" {
+		if problems := validation.IsDNS1123Subdomain(opts.GatewayClassName); len(problems) > 0 {
+			return fmt.Errorf("gateway class name %q is invalid: %s", opts.GatewayClassName, strings.Join(problems, ", "))
+		}
+	}
+	if _, err := advertisedAccessEndpoints(opts.AdvertiseAddresses); err != nil {
+		return err
+	}
 	for name, mode := range map[string]string{"defaults": opts.Policy.Defaults.ContainerMode, "limits": opts.Policy.Limits.ContainerMode} {
 		if !slices.Contains([]string{"KubernetesDefault", "All", "None"}, mode) {
 			return fmt.Errorf("policy %s container mode %q is invalid", name, mode)
@@ -145,6 +156,33 @@ func validatePolicyOptions(opts *Options) error {
 		}
 	}
 	return nil
+}
+
+func advertisedAccessEndpoints(addresses []string) ([]sshv1.AccessStatusEndpoint, error) {
+	seen := map[string]struct{}{}
+	result := make([]sshv1.AccessStatusEndpoint, 0, len(addresses))
+	for _, value := range addresses {
+		address := strings.TrimSpace(value)
+		host, rawPort, err := net.SplitHostPort(address)
+		if err != nil || host == "" {
+			return nil, fmt.Errorf("advertise address %q must use host:port form", value)
+		}
+		if net.ParseIP(host) == nil {
+			if problems := validation.IsDNS1123Subdomain(host); len(problems) > 0 {
+				return nil, fmt.Errorf("advertise address %q has invalid host: %s", value, strings.Join(problems, ", "))
+			}
+		}
+		port, err := strconv.Atoi(rawPort)
+		if err != nil || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("advertise address %q has invalid port", value)
+		}
+		if _, exists := seen[address]; exists {
+			continue
+		}
+		seen[address] = struct{}{}
+		result = append(result, sshv1.AccessStatusEndpoint{Address: address})
+	}
+	return result, nil
 }
 
 type accessPolicyRuntime struct {
@@ -192,10 +230,17 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 	podIndexer := podInformer.Informer().GetIndexer()
 	secretIndexer := secretInformer.Informer().GetIndexer()
 	podLister := accesspolicy.NewInformerPodLister(podIndexer)
+	advertisedEndpoints, err := advertisedAccessEndpoints(opts.AdvertiseAddresses)
+	if err != nil {
+		return accessPolicyRuntime{}, err
+	}
 	policyCache := accesspolicy.NewPolicyCache(
 		accessIndexer,
 		secretIndexer,
-		opts.AccessPolicy.Namespace,
+		accesspolicy.PolicyCacheOptions{
+			Namespace:        opts.AccessPolicy.Namespace,
+			GatewayClassName: opts.GatewayClassName,
+		},
 	)
 	statusController := accesspolicy.NewAccessStatusController(
 		policyCache,
@@ -204,13 +249,16 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 		func(ctx context.Context, access *sshv1.Access) (*sshv1.Access, error) {
 			return accessClient.SshV1().Accesses(access.Namespace).UpdateStatus(ctx, access, metav1.UpdateOptions{})
 		},
-		accesspolicy.ContainerPolicy{
-			DefaultMode: opts.Policy.Defaults.ContainerMode,
-			LimitMode:   opts.Policy.Limits.ContainerMode,
+		accesspolicy.AccessStatusControllerOptions{
+			Policy: accesspolicy.ContainerPolicy{
+				DefaultMode: opts.Policy.Defaults.ContainerMode,
+				LimitMode:   opts.Policy.Limits.ContainerMode,
+			},
+			Endpoints: advertisedEndpoints,
 		},
 	)
 	if _, err := accessInformer.Informer().AddEventHandler(cacheMetricHandler(func() {
-		recorder.AccessPolicyObjects("access", len(accessIndexer.List()))
+		recorder.AccessPolicyObjects("access", managedAccessCount(policyCache))
 	})); err != nil {
 		return accessPolicyRuntime{}, err
 	}
@@ -245,7 +293,7 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 				}
 			}
 			recorder.AccessPolicyCacheSyncFinished("access", metrics.ResultSuccess, time.Since(accessSyncStart))
-			recorder.AccessPolicyObjects("access", len(accessIndexer.List()))
+			recorder.AccessPolicyObjects("access", managedAccessCount(policyCache))
 
 			secretSyncStart := time.Now()
 			for _, ok := range kubeFactory.WaitForCacheSync(ctx.Done()) {
@@ -273,6 +321,14 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 		directResolver: kube.NewPolicyUsernameResolver(podLister, opts.Policy.Defaults.ContainerMode, opts.Policy.Limits.ContainerMode),
 		accessPolicy:   policyCache,
 	}, nil
+}
+
+func managedAccessCount(store accesspolicy.Store) int {
+	accesses, err := store.List(context.Background())
+	if err != nil {
+		return 0
+	}
+	return len(accesses)
 }
 
 func cacheSyncResult(ctx context.Context) string {

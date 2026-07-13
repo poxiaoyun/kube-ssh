@@ -408,6 +408,15 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-type: atomic
+              gatewayClassName:
+                description: |-
+                  GatewayClassName selects the kube-ssh gateway class that owns this Access.
+                  Omitted selects the default (classless) gateway. Gateways only process
+                  Access objects whose class exactly matches their configured class.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
               selector:
                 additionalProperties:
                   type: string
@@ -607,6 +616,29 @@ spec:
                   - type
                   type: object
                 type: array
+              endpoints:
+                description: |-
+                  Endpoints are gateway-advertised SSH connection targets for this Access.
+                  Address values use host:port form and Username contains the Access locator.
+                items:
+                  description: AccessStatusEndpoint is one address advertised by the
+                    owning gateway.
+                  properties:
+                    address:
+                      description: Address is a DNS name or IP plus port. IPv6 addresses
+                        must be bracketed.
+                      type: string
+                    username:
+                      description: Username is the SSH target locator for this Access.
+                      type: string
+                  required:
+                  - address
+                  - username
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - address
+                x-kubernetes-list-type: map
               observedGeneration:
                 description: |-
                   ObservedGeneration is the latest metadata.generation processed by a

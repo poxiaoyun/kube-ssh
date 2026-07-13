@@ -29,23 +29,26 @@ type AccessStatusController struct {
 	updateStatus  AccessStatusUpdater
 	selector      *StrategySelector
 	policy        ContainerPolicy
+	endpoints     []sshv1.AccessStatusEndpoint
 	queue         workqueue.TypedRateLimitingInterface[string]
 }
 
-func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cache.Indexer, updateStatus AccessStatusUpdater, policies ...ContainerPolicy) *AccessStatusController {
-	controller := &AccessStatusController{
+type AccessStatusControllerOptions struct {
+	Policy    ContainerPolicy
+	Endpoints []sshv1.AccessStatusEndpoint
+}
+
+func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cache.Indexer, updateStatus AccessStatusUpdater, options AccessStatusControllerOptions) *AccessStatusController {
+	return &AccessStatusController{
 		accesses:      accesses,
 		pods:          pods,
 		secretIndexer: secretIndexer,
 		updateStatus:  updateStatus,
 		selector:      NewStrategySelector(),
-		policy:        ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"},
+		policy:        options.Policy,
+		endpoints:     append([]sshv1.AccessStatusEndpoint(nil), options.Endpoints...),
 		queue:         workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
 	}
-	if len(policies) > 0 {
-		controller.policy = policies[0]
-	}
-	return controller
 }
 
 func (c *AccessStatusController) Start(ctx context.Context) {
@@ -151,6 +154,7 @@ func (c *AccessStatusController) sync(ctx context.Context, key string) error {
 	status := c.statusFor(ctx, access)
 	if access.Status.ObservedGeneration == status.ObservedGeneration &&
 		access.Status.SelectedBackend == status.SelectedBackend &&
+		equality.Semantic.DeepEqual(access.Status.Endpoints, status.Endpoints) &&
 		equality.Semantic.DeepEqual(access.Status.Conditions, status.Conditions) {
 		return nil
 	}
@@ -166,6 +170,7 @@ func (c *AccessStatusController) sync(ctx context.Context, key string) error {
 func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Access) sshv1.AccessStatus {
 	status := sshv1.AccessStatus{
 		ObservedGeneration: access.Generation,
+		Endpoints:          accessStatusEndpoints(access, c.endpoints),
 		Conditions:         append([]metav1.Condition(nil), access.Status.Conditions...),
 	}
 	validStatus, validReason, validMessage := c.validateAccess(access)
@@ -243,6 +248,19 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		Message:            "Access has at least one active Pod backend.",
 	})
 	return status
+}
+
+func accessStatusEndpoints(access *sshv1.Access, advertised []sshv1.AccessStatusEndpoint) []sshv1.AccessStatusEndpoint {
+	if access == nil || len(advertised) == 0 {
+		return nil
+	}
+	username := access.Namespace + "." + access.Name
+	endpoints := make([]sshv1.AccessStatusEndpoint, 0, len(advertised))
+	for _, endpoint := range advertised {
+		endpoint.Username = username
+		endpoints = append(endpoints, endpoint)
+	}
+	return endpoints
 }
 
 func (c *AccessStatusController) statusContainer(pod corev1.Pod, access *sshv1.Access) string {

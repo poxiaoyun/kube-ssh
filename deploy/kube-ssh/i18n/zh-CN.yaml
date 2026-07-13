@@ -1,0 +1,5 @@
+"SSH gateway": "SSH 网关"
+"Gateway class name": "网关类名"
+"Leave empty to handle only Access objects without a gateway class.": "留空时仅处理未指定网关类名的 Access。"
+"Advertise addresses": "对外访问地址"
+"Externally reachable host:port addresses published to Access status. Multiple addresses are supported.": "发布到 Access 状态的 host:port 地址，可配置多个。"
