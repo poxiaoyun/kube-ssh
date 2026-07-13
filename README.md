@@ -297,3 +297,7 @@ enabled by the current controller/runtime path.
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for build, generation, test, and release
 workflows.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
