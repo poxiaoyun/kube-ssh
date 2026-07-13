@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 	"xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 )
@@ -175,7 +176,7 @@ var _ = Describe("Access policy runtime", func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(envtestConditionStatus(access.Status.Conditions, v1.AccessConditionValid)).To(Equal(metav1.ConditionTrue))
 			g.Expect(envtestConditionStatus(access.Status.Conditions, v1.AccessConditionReady)).To(Equal(metav1.ConditionTrue))
-			g.Expect(access.Status.SelectedBackend).To(Equal("pod/" + ns + "/notebook-a"))
+			g.Expect(access.Status.SelectedBackend).To(Equal("pod/" + ns + "/notebook-a/app"))
 			g.Expect(access.Status.ObservedGeneration).To(Equal(access.Generation))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})
@@ -228,6 +229,24 @@ var _ = Describe("Access CRD schema", func() {
 		Expect(created.Spec.Session).NotTo(BeNil())
 		Expect(created.Spec.Session.IdleTimeout.Duration).To(Equal(30 * time.Minute))
 		Expect(created.Spec.Session.MaxDuration.Duration).To(Equal(8 * time.Hour))
+	})
+
+	It("accepts container and forwarding policies", func() {
+		ns := createEnvtestNamespace()
+		access := envtestAccess(ns, "container-policy", "alice", v1.Credential{Passwords: []string{"token"}})
+		access.Spec.Containers = []string{"app", "sidecar"}
+		access.Spec.Credentials[0].Containers = []string{"app"}
+		access.Spec.Credentials[0].Capabilities = v1.CapabilityPolicy{
+			LocalForward:  &v1.LocalForwardPolicy{AllowDestinations: []string{"127.0.0.1:8080", "*:8443"}},
+			RemoteForward: &v1.RemoteForwardPolicy{AllowBinds: []string{"127.0.0.1:*"}},
+		}
+
+		created, err := envtestAccessClient.SshV1().Accesses(ns).Create(context.Background(), access, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created.Spec.Containers).To(ConsistOf("app", "sidecar"))
+		Expect(created.Spec.Credentials[0].Containers).To(Equal([]string{"app"}))
+		Expect(created.Spec.Credentials[0].Capabilities.Allow).To(BeEmpty())
+		Expect(created.Spec.Credentials[0].Capabilities.LocalForward.AllowDestinations).To(ConsistOf("127.0.0.1:8080", "*:8443"))
 	})
 
 	It("preserves explicit empty session env allowlists from manifests", func() {
@@ -327,10 +346,15 @@ func envtestAccess(namespace, name, username string, credential v1.Credential) *
 
 func updateEnvtestAccessCredential(namespace, name string, credential v1.Credential) {
 	GinkgoHelper()
-	access, err := envtestAccessClient.SshV1().Accesses(namespace).Get(context.Background(), name, metav1.GetOptions{})
-	Expect(err).NotTo(HaveOccurred())
-	access.Spec.Credentials[0].Credential = credential
-	_, err = envtestAccessClient.SshV1().Accesses(namespace).Update(context.Background(), access, metav1.UpdateOptions{})
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		access, err := envtestAccessClient.SshV1().Accesses(namespace).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		access.Spec.Credentials[0].Credential = credential
+		_, err = envtestAccessClient.SshV1().Accesses(namespace).Update(context.Background(), access, metav1.UpdateOptions{})
+		return err
+	})
 	Expect(err).NotTo(HaveOccurred())
 }
 

@@ -13,7 +13,7 @@ func TestAuthorizationDeniesSessionOperations(t *testing.T) {
 	f := NewFrameworkWithOptions(t, FrameworkOptions{
 		GatewayArgs: []string{
 			"--authentication-anonymous",
-			"--authorization-deny", "exec",
+			"--policy-limit-capability", "shell",
 		},
 	})
 	user := f.Namespace + ".shell.app"
@@ -28,7 +28,7 @@ func TestAuthorizationDeniesFileTransfer(t *testing.T) {
 	f := NewFrameworkWithOptions(t, FrameworkOptions{
 		GatewayArgs: []string{
 			"--authentication-anonymous",
-			"--authorization-deny", "sftp",
+			"--policy-limit-capability", "shell",
 		},
 	})
 	user := f.Namespace + ".shell.app"
@@ -43,8 +43,7 @@ func TestAuthorizationDeniesForwarding(t *testing.T) {
 	f := NewFrameworkWithOptions(t, FrameworkOptions{
 		GatewayArgs: []string{
 			"--authentication-anonymous",
-			"--authorization-deny", "local_forward",
-			"--authorization-deny", "remote_forward",
+			"--policy-limit-capability", "shell",
 		},
 	})
 	user := f.Namespace + ".shell.app"

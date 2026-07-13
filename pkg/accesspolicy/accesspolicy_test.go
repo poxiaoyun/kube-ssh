@@ -233,6 +233,66 @@ func TestResolverRejectsAccessMismatch(t *testing.T) {
 	}
 }
 
+func TestResolverSelectsAndRestrictsContainers(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	access.Spec.Containers = []string{"app", "debug"}
+	access.Spec.Credentials[0].Containers = []string{"app"}
+	pod := readyPod("notebook-a", map[string]string{"app": "notebook"})
+	pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "debug"})
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {pod}})
+
+	req := accessResolveRequest(access)
+	req.SSHUser = "default.notebook.app"
+	tgt, err := resolver.Resolve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Resolve(app) error = %v", err)
+	}
+	if got := tgt.Option(kube.OptionContainers); got != "app" {
+		t.Fatalf("container = %q, want app", got)
+	}
+	tgt.Release()
+
+	req.SSHUser = "default.notebook.debug"
+	if _, err := resolver.Resolve(context.Background(), req); err == nil {
+		t.Fatal("Resolve(debug) error = nil, want credential container denial")
+	}
+}
+
+func TestResolverUsesKubernetesDefaultContainer(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	pod := readyPod("notebook-a", map[string]string{"app": "notebook"})
+	pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "sidecar"})
+	pod.Annotations = map[string]string{"kubectl.kubernetes.io/default-container": "sidecar"}
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {pod}})
+
+	tgt, err := resolver.Resolve(context.Background(), accessResolveRequest(access))
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	defer tgt.Release()
+	if got := tgt.Option(kube.OptionContainers); got != "sidecar" {
+		t.Fatalf("container = %q, want sidecar", got)
+	}
+}
+
+func TestResolverContainerDefaultModeRequiresAccessOverride(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	pod := readyPod("notebook-a", map[string]string{"app": "notebook"})
+	pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "sidecar"})
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {pod}})
+	req := accessResolveRequest(access)
+	req.SSHUser = "default.notebook.sidecar"
+	if _, err := resolver.Resolve(context.Background(), req); err == nil {
+		t.Fatal("Resolve(sidecar) error = nil, want default-container policy denial")
+	}
+
+	access.Spec.Containers = []string{"sidecar"}
+	resolver = NewResolver(NewMemoryStore(access), fakePodLister{"default": {pod}})
+	if _, err := resolver.Resolve(context.Background(), req); err != nil {
+		t.Fatalf("Resolve(sidecar) with Access override error = %v", err)
+	}
+}
+
 func TestResolverRoundRobinStrategyHonorsWeights(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
 	access.Spec.Strategy = &sshv1.AccessStrategy{
@@ -368,7 +428,7 @@ func TestAuthorizerCapabilities(t *testing.T) {
 	access.Spec.Credentials[0].Capabilities = sshv1.CapabilityPolicy{
 		Allow: []sshv1.Capability{sshv1.CapabilityShell, sshv1.CapabilityLocalForward, sshv1.CapabilityRemoteForward, sshv1.CapabilityAgentForward},
 		LocalForward: &sshv1.LocalForwardPolicy{
-			AllowPorts: []int32{8080},
+			AllowDestinations: []string{"*:8080"},
 		},
 		RemoteForward: &sshv1.RemoteForwardPolicy{
 			AllowBinds: []string{"127.0.0.1:*"},
@@ -427,6 +487,24 @@ func TestAuthorizerCapabilities(t *testing.T) {
 	}
 }
 
+func TestAuthorizerEmptyCapabilitiesInheritDefaults(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	authorizer := NewAuthorizer(NewMemoryStore(access), CapabilityDefaults{Allow: []sshv1.Capability{sshv1.CapabilityExec}})
+	req := authz.Request{
+		AuthExtra:  authExtra(&CredentialMatch{Access: access, Credential: &access.Spec.Credentials[0]}, CredentialTypePassword),
+		Attributes: authz.Attributes{Action: string(authz.CapabilityExec)},
+	}
+	decision, _, err := authorizer.Authorize(context.Background(), req)
+	if err != nil || decision != authz.DecisionAllow {
+		t.Fatalf("exec decision = %q, err = %v, want Allow", decision, err)
+	}
+	req.Attributes.Action = string(authz.CapabilitySFTP)
+	decision, _, err = authorizer.Authorize(context.Background(), req)
+	if err != nil || decision != authz.DecisionDeny {
+		t.Fatalf("sftp decision = %q, err = %v, want Deny", decision, err)
+	}
+}
+
 func TestAuthorizerNoOpinionWithoutAccessContext(t *testing.T) {
 	decision, _, err := NewAuthorizer(NewMemoryStore()).Authorize(context.Background(), authz.Request{})
 	if err != nil {
@@ -457,8 +535,8 @@ func TestAccessStatusControllerReportsReadyBackend(t *testing.T) {
 	if got := conditionStatus(status.Conditions, sshv1.AccessConditionReady); got != metav1.ConditionTrue {
 		t.Fatalf("Ready condition = %s, want True", got)
 	}
-	if status.SelectedBackend != "pod/default/notebook-a" {
-		t.Fatalf("SelectedBackend = %q, want pod/default/notebook-a", status.SelectedBackend)
+	if status.SelectedBackend != "pod/default/notebook-a/app" {
+		t.Fatalf("SelectedBackend = %q, want pod/default/notebook-a/app", status.SelectedBackend)
 	}
 }
 
@@ -483,6 +561,32 @@ func TestAccessStatusControllerReportsMissingSecret(t *testing.T) {
 	}
 	if got := conditionStatus(status.Conditions, sshv1.AccessConditionReady); got != metav1.ConditionFalse {
 		t.Fatalf("Ready condition = %s, want False", got)
+	}
+}
+
+func TestAccessStatusControllerAppliesGlobalContainerPolicy(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
+	controller := NewAccessStatusController(
+		policyCache,
+		newTestInformerPodLister(t, readyPod("notebook-a", map[string]string{"app": "notebook"})),
+		policyCache.secretIndexer,
+		nil,
+		ContainerPolicy{DefaultMode: "None", LimitMode: "All"},
+	)
+
+	status := controller.statusFor(context.Background(), access)
+	if got := conditionStatus(status.Conditions, sshv1.AccessConditionReady); got != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %s, want False", got)
+	}
+	if got := conditionReason(status.Conditions, sshv1.AccessConditionReady); got != "NoBackends" {
+		t.Fatalf("Ready reason = %q, want NoBackends", got)
+	}
+
+	access.Spec.Containers = []string{"app"}
+	status = controller.statusFor(context.Background(), access)
+	if got := conditionStatus(status.Conditions, sshv1.AccessConditionReady); got != metav1.ConditionTrue {
+		t.Fatalf("Ready condition with explicit container = %s, want True", got)
 	}
 }
 
@@ -562,6 +666,7 @@ func readyPod(name string, labels map[string]string) corev1.Pod {
 func readyPodAt(name string, labels map[string]string, created time.Time) corev1.Pod {
 	return corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: labels, CreationTimestamp: metav1.NewTime(created)},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			Conditions: []corev1.PodCondition{

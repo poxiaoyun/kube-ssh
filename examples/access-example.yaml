@@ -8,12 +8,5 @@ spec:
     app: notebook
   credentials:
     - username: alice
-      groups:
-        - dev
-      passwords:
-        - dev-token
-      capabilities:
-        allow:
-          - shell
-          - exec
-          - sftp
+      publicKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPJjO+3uspsX3jrw5xIZmdn3TJJQLrZ68kALV3/9hRXM kube-ssh-example

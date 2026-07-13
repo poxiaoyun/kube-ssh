@@ -3,6 +3,7 @@ package accesspolicy
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"xiaoshiai.cn/kube-ssh/pkg/kube"
@@ -14,14 +15,27 @@ type Resolver struct {
 	store    AccessGetter
 	pods     PodLister
 	selector *StrategySelector
+	policy   ContainerPolicy
 }
 
-func NewResolver(store AccessGetter, pods PodLister) *Resolver {
-	return &Resolver{store: store, pods: pods, selector: NewStrategySelector()}
+type ContainerPolicy struct {
+	DefaultMode string
+	LimitMode   string
+}
+
+func NewResolver(store AccessGetter, pods PodLister, policies ...ContainerPolicy) *Resolver {
+	r := &Resolver{store: store, pods: pods, selector: NewStrategySelector(), policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"}}
+	if len(policies) > 0 {
+		r.policy = policies[0]
+	}
+	return r
 }
 
 func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
-	namespace, name, ok := parseAccessLocator(req.SSHUser)
+	namespace, name, container, ok, err := parseAccessLocator(req.SSHUser, req.AuthExtra)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, target.ErrNotProvided
 	}
@@ -49,15 +63,52 @@ func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*tar
 	if !ok {
 		return nil, status.InvalidTarget("access %s/%s matched no available pods", namespace, name)
 	}
-	return target.WithRelease(kube.NewTarget(namespace, selection.pod.Name, ""), selection.release), nil
+	requestedContainer := container
+	container, defaultContainer, err := kube.ResolvePodContainer(&selection.pod, container)
+	if err != nil {
+		selection.release()
+		return nil, err
+	}
+	credential := findCredential(access, firstExtra(req.AuthExtra, ExtraCredentialUser))
+	accessAllowed := kube.ContainerModeAllows(r.policy.DefaultMode, requestedContainer != "", container, defaultContainer)
+	if len(access.Spec.Containers) > 0 {
+		accessAllowed = containerAllowed(access.Spec.Containers, container)
+	}
+	if !accessAllowed || !kube.ContainerModeAllows(r.policy.LimitMode, requestedContainer != "", container, defaultContainer) || (credential != nil && !containerAllowed(credential.Containers, container)) {
+		selection.release()
+		return nil, status.InvalidTarget("container %q is not allowed by access %s/%s", container, namespace, name)
+	}
+	return target.WithRelease(kube.NewTarget(namespace, selection.pod.Name, container), selection.release), nil
 }
 
-func parseAccessLocator(sshUser string) (string, string, bool) {
+func parseAccessLocator(sshUser string, extra map[string][]string) (string, string, string, bool, error) {
+	authNamespace := firstExtra(extra, ExtraAccessNamespace)
+	authName := firstExtra(extra, ExtraAccessName)
+	if authNamespace != "" || authName != "" {
+		if authNamespace == "" || authName == "" {
+			return "", "", "", false, status.InvalidTarget("authenticated access identity is incomplete")
+		}
+		prefix := authNamespace + "." + authName
+		switch {
+		case sshUser == prefix:
+			return authNamespace, authName, "", true, nil
+		case strings.HasPrefix(sshUser, prefix+"."):
+			container := strings.TrimPrefix(sshUser, prefix+".")
+			if container != "" && !strings.Contains(container, ".") {
+				return authNamespace, authName, container, true, nil
+			}
+		}
+		return "", "", "", false, status.InvalidTarget("target %q does not match authenticated access %s/%s", sshUser, authNamespace, authName)
+	}
 	namespace, name, ok := strings.Cut(sshUser, ".")
 	if !ok || namespace == "" || name == "" {
-		return "", "", false
+		return "", "", "", false, nil
 	}
-	return namespace, name, true
+	return namespace, name, "", true, nil
+}
+
+func containerAllowed(allow []string, container string) bool {
+	return len(allow) == 0 || slices.Contains(allow, "*") || slices.Contains(allow, container)
 }
 
 func requireAuthAccess(extra map[string][]string, namespace, name string) error {

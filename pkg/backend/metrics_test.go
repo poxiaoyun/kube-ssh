@@ -47,6 +47,7 @@ type captureMetricsRecorder struct {
 	backendResults map[string]string
 }
 
+func (r *captureMetricsRecorder) AuditDelivery(string)                                    {}
 func (r *captureMetricsRecorder) AuthAttempt(string, string)                              {}
 func (r *captureMetricsRecorder) ConnectionOpened(string)                                 {}
 func (r *captureMetricsRecorder) ConnectionClosed(string)                                 {}

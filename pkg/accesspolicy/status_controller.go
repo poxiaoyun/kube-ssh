@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
+	"xiaoshiai.cn/kube-ssh/pkg/kube"
 )
 
 type AccessStatusUpdater func(context.Context, *sshv1.Access) (*sshv1.Access, error)
@@ -26,18 +28,24 @@ type AccessStatusController struct {
 	secretIndexer cache.Indexer
 	updateStatus  AccessStatusUpdater
 	selector      *StrategySelector
+	policy        ContainerPolicy
 	queue         workqueue.TypedRateLimitingInterface[string]
 }
 
-func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cache.Indexer, updateStatus AccessStatusUpdater) *AccessStatusController {
-	return &AccessStatusController{
+func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cache.Indexer, updateStatus AccessStatusUpdater, policies ...ContainerPolicy) *AccessStatusController {
+	controller := &AccessStatusController{
 		accesses:      accesses,
 		pods:          pods,
 		secretIndexer: secretIndexer,
 		updateStatus:  updateStatus,
 		selector:      NewStrategySelector(),
+		policy:        ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"},
 		queue:         workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
 	}
+	if len(policies) > 0 {
+		controller.policy = policies[0]
+	}
+	return controller
 }
 
 func (c *AccessStatusController) Start(ctx context.Context) {
@@ -200,7 +208,13 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		})
 		return status
 	}
-	pod, ok := c.selector.PreviewPod(access, pods)
+	selectablePods := make([]corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if c.statusContainer(pod, access) != "" {
+			selectablePods = append(selectablePods, pod)
+		}
+	}
+	pod, ok := c.selector.PreviewPod(access, selectablePods)
 	if !ok {
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               sshv1.AccessConditionReady,
@@ -211,7 +225,16 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		})
 		return status
 	}
-	status.SelectedBackend = "pod/" + access.Namespace + "/" + pod.Name
+	container := c.statusContainer(pod, access)
+	if container == "" {
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type: sshv1.AccessConditionReady, Status: metav1.ConditionFalse,
+			ObservedGeneration: access.Generation, Reason: "NoContainers",
+			Message: "Selected Pod has no container exposed by this Access.",
+		})
+		return status
+	}
+	status.SelectedBackend = "pod/" + access.Namespace + "/" + pod.Name + "/" + container
 	apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 		Type:               sshv1.AccessConditionReady,
 		Status:             metav1.ConditionTrue,
@@ -220,6 +243,29 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		Message:            "Access has at least one active Pod backend.",
 	})
 	return status
+}
+
+func (c *AccessStatusController) statusContainer(pod corev1.Pod, access *sshv1.Access) string {
+	_, defaultContainer, err := kube.ResolvePodContainer(&pod, "")
+	if err != nil {
+		return ""
+	}
+	for _, container := range pod.Spec.Containers {
+		explicit := container.Name != defaultContainer
+		accessAllowed := kube.ContainerModeAllows(c.policy.DefaultMode, explicit, container.Name, defaultContainer)
+		if len(access.Spec.Containers) > 0 {
+			accessAllowed = containerAllowed(access.Spec.Containers, container.Name)
+		}
+		if !accessAllowed || !kube.ContainerModeAllows(c.policy.LimitMode, explicit, container.Name, defaultContainer) {
+			continue
+		}
+		for _, credential := range access.Spec.Credentials {
+			if containerAllowed(credential.Containers, container.Name) {
+				return container.Name
+			}
+		}
+	}
+	return ""
 }
 
 func (c *AccessStatusController) validateAccess(access *sshv1.Access) (metav1.ConditionStatus, string, string) {
@@ -242,8 +288,47 @@ func (c *AccessStatusController) validateAccess(access *sshv1.Access) (metav1.Co
 		if ok, reason, message := c.validateCredential(access.Namespace, i, credential); !ok {
 			return metav1.ConditionFalse, reason, message
 		}
+		if ok, message := validateCapabilityPolicy(credential.Capabilities); !ok {
+			return metav1.ConditionFalse, "InvalidCapabilityPolicy", fmt.Sprintf("Credential %q: %s", credential.Username, message)
+		}
+		if len(access.Spec.Containers) > 0 {
+			for _, container := range credential.Containers {
+				if container == "*" {
+					continue
+				}
+				if !containerAllowed(access.Spec.Containers, container) {
+					return metav1.ConditionFalse, "InvalidContainerPolicy", fmt.Sprintf("Credential %q container %q is not exposed by the Access.", credential.Username, container)
+				}
+			}
+		}
 	}
 	return metav1.ConditionTrue, "Valid", "Access spec and referenced credentials are valid."
+}
+
+func validateCapabilityPolicy(policy sshv1.CapabilityPolicy) (bool, string) {
+	if policy.LocalForward != nil {
+		for _, expression := range policy.LocalForward.AllowDestinations {
+			if !validForwardExpression(expression) {
+				return false, fmt.Sprintf("invalid local forward destination %q", expression)
+			}
+		}
+	}
+	if policy.RemoteForward != nil {
+		for _, expression := range policy.RemoteForward.AllowBinds {
+			if !validForwardExpression(expression) {
+				return false, fmt.Sprintf("invalid remote forward bind %q", expression)
+			}
+		}
+	}
+	return true, ""
+}
+
+func validForwardExpression(expression string) bool {
+	if expression == "*" || expression == "*:*" {
+		return true
+	}
+	host, port, err := net.SplitHostPort(expression)
+	return err == nil && host != "" && port != ""
 }
 
 func (c *AccessStatusController) validateCredential(namespace string, index int, credential sshv1.AccessCredential) (bool, string, string) {

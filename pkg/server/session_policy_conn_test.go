@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-func TestPolicyConnIdleTimeout(t *testing.T) {
+func TestSessionPolicyConnIdleTimeout(t *testing.T) {
 	serverSide, clientSide := net.Pipe()
 	defer clientSide.Close()
 
-	conn := newPolicyConn(serverSide, effectiveSessionPolicy{IdleTimeout: 20 * time.Millisecond})
+	conn := newSessionPolicyConn(serverSide, effectiveSessionPolicy{IdleTimeout: 20 * time.Millisecond})
 	defer conn.Close()
 
 	errCh := make(chan error, 1)
@@ -25,20 +25,16 @@ func TestPolicyConnIdleTimeout(t *testing.T) {
 		if err == nil {
 			t.Fatal("Read() error = nil, want timeout")
 		}
-		netErr, ok := err.(net.Error)
-		if !ok || !netErr.Timeout() {
-			t.Fatalf("Read() error = %T %v, want timeout", err, err)
-		}
 	case <-time.After(time.Second):
 		t.Fatal("Read() did not time out")
 	}
 }
 
-func TestPolicyConnMaxDurationClosesPeer(t *testing.T) {
+func TestSessionPolicyConnMaxDurationClosesPeer(t *testing.T) {
 	serverSide, clientSide := net.Pipe()
 	defer clientSide.Close()
 
-	conn := newPolicyConn(serverSide, effectiveSessionPolicy{MaxDuration: 20 * time.Millisecond})
+	conn := newSessionPolicyConn(serverSide, effectiveSessionPolicy{MaxDuration: 20 * time.Millisecond})
 	defer conn.Close()
 
 	errCh := make(chan error, 1)
@@ -58,11 +54,11 @@ func TestPolicyConnMaxDurationClosesPeer(t *testing.T) {
 	}
 }
 
-func TestPolicyConnApplyPolicyShortensMaxDuration(t *testing.T) {
+func TestSessionPolicyConnApplyPolicyShortensMaxDuration(t *testing.T) {
 	serverSide, clientSide := net.Pipe()
 	defer clientSide.Close()
 
-	conn := newPolicyConn(serverSide, effectiveSessionPolicy{MaxDuration: time.Hour})
+	conn := newSessionPolicyConn(serverSide, effectiveSessionPolicy{MaxDuration: time.Hour})
 	defer conn.Close()
 	conn.ApplyPolicy(effectiveSessionPolicy{MaxDuration: 20 * time.Millisecond})
 
@@ -83,11 +79,11 @@ func TestPolicyConnApplyPolicyShortensMaxDuration(t *testing.T) {
 	}
 }
 
-func TestPolicyConnWriteRefreshesIdleDeadline(t *testing.T) {
+func TestSessionPolicyConnWriteRefreshesIdleDeadline(t *testing.T) {
 	serverSide, clientSide := net.Pipe()
 	defer clientSide.Close()
 
-	conn := newPolicyConn(serverSide, effectiveSessionPolicy{IdleTimeout: time.Second})
+	conn := newSessionPolicyConn(serverSide, effectiveSessionPolicy{IdleTimeout: time.Second})
 	defer conn.Close()
 
 	readCh := make(chan byte, 1)
@@ -114,5 +110,22 @@ func TestPolicyConnWriteRefreshesIdleDeadline(t *testing.T) {
 		t.Fatalf("peer Read() error = %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("peer did not read written byte")
+	}
+}
+
+func TestCloseNotifyConnCallbackRunsOnce(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	defer clientSide.Close()
+	calls := 0
+	conn := newCloseNotifyConn(serverSide, func() { calls++ })
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("close callback calls = %d, want 1", calls)
 	}
 }

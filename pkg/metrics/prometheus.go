@@ -47,6 +47,7 @@ type PrometheusRecorder struct {
 	accessPolicyResolveDur   *prometheus.HistogramVec
 	accessPolicyAuthorize    *prometheus.CounterVec
 	accessPolicyAuthorizeDur *prometheus.HistogramVec
+	auditEvents              *prometheus.CounterVec
 	buildInfo                *prometheus.GaugeVec
 }
 
@@ -194,6 +195,11 @@ func NewPrometheusRecorder(registry *prometheus.Registry, opts PrometheusOptions
 			Help:      "AccessPolicy authorization evaluation duration in seconds.",
 			Buckets:   []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
 		}, []string{"capability", "decision", "result"}),
+		auditEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "audit_events_total",
+			Help:      "Audit event delivery outcomes.",
+		}, []string{"result"}),
 		buildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "build_info",
@@ -226,6 +232,7 @@ func NewPrometheusRecorder(registry *prometheus.Registry, opts PrometheusOptions
 		recorder.accessPolicyResolveDur,
 		recorder.accessPolicyAuthorize,
 		recorder.accessPolicyAuthorizeDur,
+		recorder.auditEvents,
 		recorder.buildInfo,
 	)
 	recorder.buildInfo.WithLabelValues(
@@ -243,6 +250,10 @@ func (r *PrometheusRecorder) Handler() http.Handler {
 
 func (r *PrometheusRecorder) AuthAttempt(credential, result string) {
 	r.authAttempts.WithLabelValues(labelValue(credential), labelValue(result)).Inc()
+}
+
+func (r *PrometheusRecorder) AuditDelivery(result string) {
+	r.auditEvents.WithLabelValues(labelValue(result)).Inc()
 }
 
 func (r *PrometheusRecorder) ConnectionOpened(method string) {

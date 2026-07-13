@@ -32,6 +32,13 @@ func (l *KubernetesPodLister) List(ctx context.Context, namespace string, select
 	return pods.Items, nil
 }
 
+func (l *KubernetesPodLister) Get(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+	if l == nil || l.client == nil {
+		return nil, fmt.Errorf("pod getter requires a kubernetes client")
+	}
+	return l.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
 type InformerPodLister struct {
 	indexer cache.Indexer
 }
@@ -56,4 +63,22 @@ func (l *InformerPodLister) List(_ context.Context, namespace string, selector m
 		return nil, err
 	}
 	return out, nil
+}
+
+func (l *InformerPodLister) Get(_ context.Context, namespace, name string) (*corev1.Pod, error) {
+	if l == nil || l.indexer == nil {
+		return nil, fmt.Errorf("pod getter requires a pod indexer")
+	}
+	obj, exists, err := l.indexer.GetByKey(namespace + "/" + name)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("pod %s/%s not found", namespace, name)
+	}
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("cached object %s/%s is not a pod", namespace, name)
+	}
+	return pod.DeepCopy(), nil
 }

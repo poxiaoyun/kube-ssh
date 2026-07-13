@@ -23,8 +23,6 @@ type effectiveSessionPolicy struct {
 
 	IdleTimeout time.Duration
 	MaxDuration time.Duration
-
-	AgentForwarding bool
 }
 
 func buildGlobalSessionPolicy(opts *Options) effectiveSessionPolicy {
@@ -32,11 +30,12 @@ func buildGlobalSessionPolicy(opts *Options) effectiveSessionPolicy {
 		opts = NewDefaultOptions()
 	}
 	return effectiveSessionPolicy{
-		DefaultShell:       opts.DefaultShell,
-		globalEnvAllowlist: append([]string(nil), opts.EnvAllowlist...),
-		IdleTimeout:        positiveDuration(opts.SSH.IdleTimeout),
-		MaxDuration:        positiveDuration(opts.SSH.MaxDuration),
-		AgentForwarding:    opts.SSH.AgentForwarding,
+		DefaultShell:        opts.Policy.Defaults.DefaultShell,
+		globalEnvAllowlist:  append([]string(nil), opts.Policy.Limits.EnvAllowlist...),
+		accessEnvAllowlist:  append([]string(nil), opts.Policy.Defaults.EnvAllowlist...),
+		accessEnvConfigured: true,
+		IdleTimeout:         boundedDuration(opts.Policy.Defaults.IdleTimeout, opts.Policy.Limits.IdleTimeout),
+		MaxDuration:         boundedDuration(opts.Policy.Defaults.MaxDuration, opts.Policy.Limits.MaxDuration),
 	}
 }
 
@@ -54,15 +53,29 @@ func buildAccessSessionPolicy(opts *Options, access *sshv1.Access) effectiveSess
 		policy.accessEnvAllowlist = append([]string(nil), session.EnvAllowlist...)
 	}
 	if session.IdleTimeout != nil {
-		policy.IdleTimeout = stricterDuration(policy.IdleTimeout, session.IdleTimeout.Duration)
+		if duration := positiveDuration(session.IdleTimeout.Duration); duration > 0 {
+			policy.IdleTimeout = boundedDuration(duration, opts.Policy.Limits.IdleTimeout)
+		}
 	}
 	if session.MaxDuration != nil {
-		policy.MaxDuration = stricterDuration(policy.MaxDuration, session.MaxDuration.Duration)
-	}
-	if session.AgentForwarding != nil {
-		policy.AgentForwarding = policy.AgentForwarding && *session.AgentForwarding
+		if duration := positiveDuration(session.MaxDuration.Duration); duration > 0 {
+			policy.MaxDuration = boundedDuration(duration, opts.Policy.Limits.MaxDuration)
+		}
 	}
 	return policy
+}
+
+func boundedDuration(value, limit time.Duration) time.Duration {
+	value = positiveDuration(value)
+	limit = positiveDuration(limit)
+	switch {
+	case value == 0:
+		return limit
+	case limit == 0:
+		return value
+	default:
+		return min(value, limit)
+	}
 }
 
 func (p effectiveSessionPolicy) filterEnv(envs []string) []string {
@@ -121,26 +134,8 @@ func envAllowlistAllows(allowlist []string, key string) bool {
 	return false
 }
 
-func stricterDuration(global, access time.Duration) time.Duration {
-	global = positiveDuration(global)
-	access = positiveDuration(access)
-	switch {
-	case global <= 0:
-		return access
-	case access <= 0:
-		return global
-	case access < global:
-		return access
-	default:
-		return global
-	}
-}
-
 func positiveDuration(duration time.Duration) time.Duration {
-	if duration <= 0 {
-		return 0
-	}
-	return duration
+	return max(duration, 0)
 }
 
 func (s *Server) resolveSessionPolicy(ctx context.Context, sshUser string, infoExtra map[string][]string) (effectiveSessionPolicy, error) {
@@ -148,7 +143,24 @@ func (s *Server) resolveSessionPolicy(ctx context.Context, sshUser string, infoE
 	if err != nil {
 		return effectiveSessionPolicy{}, err
 	}
-	return buildAccessSessionPolicy(s.opts, access), nil
+	opts := s.opts
+	if opts == nil {
+		opts = NewDefaultOptions()
+	}
+	policy := buildAccessSessionPolicy(opts, access)
+	if !stringAllowed(opts.Policy.Limits.Shells, policy.DefaultShell) {
+		return effectiveSessionPolicy{}, fmt.Errorf("shell %q exceeds global policy limits", policy.DefaultShell)
+	}
+	return policy, nil
+}
+
+func stringAllowed(patterns []string, value string) bool {
+	for _, pattern := range patterns {
+		if pattern == "*" || pattern == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) sessionPolicyAccess(ctx context.Context, sshUser string, infoExtra map[string][]string) (*sshv1.Access, error) {

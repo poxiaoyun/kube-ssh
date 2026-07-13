@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
+	"slices"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +37,7 @@ import (
 // using Options-based construction.
 type Dependencies struct {
 	Start         func(context.Context) error
+	Stop          func(context.Context) error
 	Authenticator authn.SSHAuthenticator
 	Authorizer    authz.Authorizer
 	Resolver      target.Resolver
@@ -63,7 +66,13 @@ func (d Dependencies) Validate() error {
 	return nil
 }
 
-func buildDependencies(opts *Options) (Dependencies, error) {
+func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error) {
+	if err := ctx.Err(); err != nil {
+		return Dependencies{}, err
+	}
+	if err := validatePolicyOptions(opts); err != nil {
+		return Dependencies{}, err
+	}
 	kubeClient, restConfig, err := kube.Build(opts.Kubeconfig)
 	if err != nil {
 		return Dependencies{}, fmt.Errorf("build kubernetes client: %w", err)
@@ -85,24 +94,66 @@ func buildDependencies(opts *Options) (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
+	directResolver := accessRuntime.directResolver
+	if directResolver == nil {
+		directResolver = kube.NewPolicyUsernameResolver(accesspolicy.NewKubernetesPodLister(kubeClient), opts.Policy.Defaults.ContainerMode, opts.Policy.Limits.ContainerMode)
+	}
+	auditRecorder := audit.NewAsyncRecorder(audit.NewStdoutSink(nil), opts.Audit.QueueSize, metricsRecorder.AuditDelivery)
 	return Dependencies{
-		Start:         accessRuntime.start,
+		Start: accessRuntime.start,
+		Stop: func(ctx context.Context) error {
+			flushTimeout := opts.Audit.FlushTimeout
+			if flushTimeout <= 0 {
+				flushTimeout = 5 * time.Second
+			}
+			flushCtx, cancel := context.WithTimeout(ctx, flushTimeout)
+			defer cancel()
+			return auditRecorder.Close(flushCtx)
+		},
 		Authenticator: authenticator,
 		Authorizer:    authorizer,
-		Resolver:      buildResolver(accessRuntime.resolver),
+		Resolver:      buildResolver(accessRuntime.resolver, directResolver),
 		AccessPolicy:  accessRuntime.accessPolicy,
 		Backend:       backend,
-		AuditRecorder: audit.NewStdoutRecorder(),
+		AuditRecorder: auditRecorder,
 		Metrics:       metricsRecorder,
 	}, nil
 }
 
+func validatePolicyOptions(opts *Options) error {
+	if opts == nil {
+		return fmt.Errorf("options are required")
+	}
+	for name, mode := range map[string]string{"defaults": opts.Policy.Defaults.ContainerMode, "limits": opts.Policy.Limits.ContainerMode} {
+		if !slices.Contains([]string{"KubernetesDefault", "All", "None"}, mode) {
+			return fmt.Errorf("policy %s container mode %q is invalid", name, mode)
+		}
+	}
+	for name, patterns := range map[string][]string{
+		"default local forward":  opts.Policy.Defaults.LocalForwardDestinations,
+		"default remote forward": opts.Policy.Defaults.RemoteForwardBinds,
+		"limit local forward":    opts.Policy.Limits.LocalForwardDestinations,
+		"limit remote forward":   opts.Policy.Limits.RemoteForwardBinds,
+	} {
+		for _, pattern := range patterns {
+			if pattern == "*" || pattern == "*:*" {
+				continue
+			}
+			if _, _, err := net.SplitHostPort(pattern); err != nil {
+				return fmt.Errorf("policy %s expression %q is invalid: %w", name, pattern, err)
+			}
+		}
+	}
+	return nil
+}
+
 type accessPolicyRuntime struct {
-	start         func(context.Context) error
-	authenticator authn.SSHAuthenticator
-	authorizer    authz.Authorizer
-	resolver      target.Resolver
-	accessPolicy  accessSessionPolicyGetter
+	start          func(context.Context) error
+	authenticator  authn.SSHAuthenticator
+	authorizer     authz.Authorizer
+	resolver       target.Resolver
+	directResolver target.Resolver
+	accessPolicy   accessSessionPolicyGetter
 }
 
 func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, restConfig *rest.Config, recorder metrics.Recorder) (accessPolicyRuntime, error) {
@@ -152,6 +203,10 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 		secretIndexer,
 		func(ctx context.Context, access *sshv1.Access) (*sshv1.Access, error) {
 			return accessClient.SshV1().Accesses(access.Namespace).UpdateStatus(ctx, access, metav1.UpdateOptions{})
+		},
+		accesspolicy.ContainerPolicy{
+			DefaultMode: opts.Policy.Defaults.ContainerMode,
+			LimitMode:   opts.Policy.Limits.ContainerMode,
 		},
 	)
 	if _, err := accessInformer.Informer().AddEventHandler(cacheMetricHandler(func() {
@@ -206,9 +261,17 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 			return nil
 		},
 		authenticator: accesspolicy.WithAuthenticatorMetrics(accesspolicy.NewAuthenticator(policyCache), recorder),
-		authorizer:    accesspolicy.WithAuthorizerMetrics(accesspolicy.NewAuthorizer(policyCache), recorder),
-		resolver:      accesspolicy.WithResolverMetrics(accesspolicy.NewResolver(policyCache, podLister), recorder),
-		accessPolicy:  policyCache,
+		authorizer: accesspolicy.WithAuthorizerMetrics(accesspolicy.NewAuthorizer(policyCache, accesspolicy.CapabilityDefaults{
+			Allow:                    accessCapabilities(opts.Policy.Defaults.Capabilities),
+			LocalForwardDestinations: opts.Policy.Defaults.LocalForwardDestinations,
+			RemoteForwardBinds:       opts.Policy.Defaults.RemoteForwardBinds,
+		}), recorder),
+		resolver: accesspolicy.WithResolverMetrics(accesspolicy.NewResolver(policyCache, podLister, accesspolicy.ContainerPolicy{
+			DefaultMode: opts.Policy.Defaults.ContainerMode,
+			LimitMode:   opts.Policy.Limits.ContainerMode,
+		}), recorder),
+		directResolver: kube.NewPolicyUsernameResolver(podLister, opts.Policy.Defaults.ContainerMode, opts.Policy.Limits.ContainerMode),
+		accessPolicy:   policyCache,
 	}, nil
 }
 
@@ -257,28 +320,21 @@ func buildAuthenticator(opts *Options, accessAuthenticator authn.SSHAuthenticato
 	return authn.NewChain(authenticators...), nil
 }
 
-func buildResolver(accessResolver target.Resolver) target.Resolver {
+func buildResolver(accessResolver target.Resolver, directResolvers ...target.Resolver) target.Resolver {
 	resolvers := target.Chain{}
 	if accessResolver != nil {
 		resolvers = append(resolvers, accessResolver)
 	}
-	resolvers = append(resolvers, kube.NewUsernameResolver(), target.NewTargetHintResolver())
+	directResolver := target.Resolver(kube.NewUsernameResolver())
+	if len(directResolvers) > 0 && directResolvers[0] != nil {
+		directResolver = directResolvers[0]
+	}
+	resolvers = append(resolvers, directResolver, target.NewTargetHintResolver())
 	return resolvers
 }
 
 func buildAuthorizer(opts *Options, kubeClient kubernetes.Interface, accessAuthorizer authz.Authorizer) (authz.Authorizer, error) {
-	allow, err := parseCapabilities(opts.Authorization.Allow)
-	if err != nil {
-		return nil, err
-	}
-	deny, err := parseCapabilities(opts.Authorization.Deny)
-	if err != nil {
-		return nil, err
-	}
 	chain := authz.Chain{}
-	if len(allow) > 0 || len(deny) > 0 {
-		chain = append(chain, authz.StaticCapabilities{Allow: allow, Deny: deny})
-	}
 	if accessAuthorizer != nil {
 		chain = append(chain, accessAuthorizer)
 	}
@@ -291,7 +347,7 @@ func buildAuthorizer(opts *Options, kubeClient kubernetes.Interface, accessAutho
 			chain = append(chain, webhookAuthorizer)
 		}
 		chain = append(chain, authz.NewKubernetesSARAuthorizer(kubeClient))
-		return chain, nil
+		return withPolicyGuards(opts, chain)
 	}
 	if opts.Authorization.Webhook.Enabled() {
 		webhookAuthorizer, err := authz.NewWebhookAuthorizer(opts.Authorization.Webhook)
@@ -299,20 +355,49 @@ func buildAuthorizer(opts *Options, kubeClient kubernetes.Interface, accessAutho
 			return nil, err
 		}
 		chain = append(chain, webhookAuthorizer)
-		return chain, nil
-	}
-	if len(allow) > 0 || len(deny) > 0 {
-		chain = append(chain, authz.AllowAll{})
-		return chain, nil
+		return withPolicyGuards(opts, chain)
 	}
 	if opts.Authorization.AllowAll {
 		chain = append(chain, authz.AllowAll{})
-		return chain, nil
+		return withPolicyGuards(opts, chain)
 	}
 	if len(chain) > 0 {
-		return chain, nil
+		return withPolicyGuards(opts, chain)
 	}
 	return nil, fmt.Errorf("authorization is not configured")
+}
+
+type policyGuardedAuthorizer struct {
+	chain authz.Chain
+}
+
+func (a *policyGuardedAuthorizer) Authorize(ctx context.Context, req authz.Request) (authz.Decision, string, error) {
+	return a.chain.Authorize(ctx, req)
+}
+
+func withPolicyGuards(opts *Options, next authz.Authorizer) (authz.Authorizer, error) {
+	limits, err := parseCapabilities(opts.Policy.Limits.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := parseCapabilities(opts.Policy.Defaults.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	return &policyGuardedAuthorizer{chain: authz.Chain{
+		authz.PolicyLimits{
+			Capabilities:             limits,
+			LocalForwardDestinations: opts.Policy.Limits.LocalForwardDestinations,
+			RemoteForwardBinds:       opts.Policy.Limits.RemoteForwardBinds,
+		},
+		authz.PolicyLimits{
+			Capabilities:             defaults,
+			LocalForwardDestinations: opts.Policy.Defaults.LocalForwardDestinations,
+			RemoteForwardBinds:       opts.Policy.Defaults.RemoteForwardBinds,
+			SkipAccess:               true,
+		},
+		next,
+	}}, nil
 }
 
 func buildMetrics(opts *Options) metrics.Recorder {
@@ -341,6 +426,10 @@ func buildBackend(opts *Options, kubeClient kubernetes.Interface, restConfig *re
 func parseCapabilities(values []string) ([]authz.Capability, error) {
 	capabilities := make([]authz.Capability, 0, len(values))
 	for _, value := range values {
+		if value == "*" {
+			capabilities = append(capabilities, authz.Capability(value))
+			continue
+		}
 		capability, err := authz.ParseCapability(value)
 		if err != nil {
 			return nil, err
@@ -348,4 +437,12 @@ func parseCapabilities(values []string) ([]authz.Capability, error) {
 		capabilities = append(capabilities, capability)
 	}
 	return capabilities, nil
+}
+
+func accessCapabilities(values []string) []sshv1.Capability {
+	result := make([]sshv1.Capability, 0, len(values))
+	for _, value := range values {
+		result = append(result, sshv1.Capability(value))
+	}
+	return result
 }

@@ -43,7 +43,7 @@ func Run(ctx context.Context, opts *Options) error {
 		opts = NewDefaultOptions()
 	}
 
-	deps, err := buildDependencies(opts)
+	deps, err := buildDependencies(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -58,8 +58,27 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 	if err := deps.Validate(); err != nil {
 		return fmt.Errorf("invalid dependencies: %w", err)
 	}
+	if err := validatePolicyOptions(opts); err != nil {
+		return fmt.Errorf("invalid policy: %w", err)
+	}
+	if _, ok := deps.Authorizer.(*policyGuardedAuthorizer); !ok {
+		guarded, err := withPolicyGuards(opts, deps.Authorizer)
+		if err != nil {
+			return fmt.Errorf("invalid policy: %w", err)
+		}
+		deps.Authorizer = guarded
+	}
 	if deps.Metrics == nil {
 		deps.Metrics = metrics.NopRecorder{}
+	}
+	if deps.Stop != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := deps.Stop(shutdownCtx); err != nil {
+				slog.Error("stop dependencies", "err", err)
+			}
+		}()
 	}
 	if deps.Start != nil {
 		if err := deps.Start(ctx); err != nil {
@@ -77,13 +96,12 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 		backend:      deps.Backend,
 		clientStates: make(map[*cryptossh.ServerConn]*clientState),
 	}
+	connectionFeatures := s.connectionFeatures()
 
 	srv := &gossh.Server{
 		Addr: s.opts.ListenAddress,
 		ConnCallback: func(ctx gossh.Context, conn net.Conn) net.Conn {
-			policyConn := newPolicyConn(conn, buildGlobalSessionPolicy(s.opts))
-			WithPolicyConn(ctx, policyConn)
-			return policyConn
+			return applyConnectionFeatures(ctx, conn, connectionFeatures...)
 		},
 		Handler:          s.handleSession,
 		PublicKeyHandler: s.handlePublicKey,
@@ -146,7 +164,8 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 		return nil
 	})
 
-	if err := group.Wait(); err != nil {
+	err = group.Wait()
+	if err != nil {
 		return err
 	}
 	return ctx.Err()
@@ -163,6 +182,9 @@ func startMetricsServer(ctx context.Context, opts MetricsOptions, recorder metri
 	if !strings.HasPrefix(path, "/") {
 		return nil, nil, fmt.Errorf("metrics path must start with /")
 	}
+	if path == "/healthz" || path == "/readyz" {
+		return nil, nil, fmt.Errorf("metrics path %q conflicts with a health endpoint", path)
+	}
 	provider, ok := recorder.(metrics.HandlerProvider)
 	if !ok {
 		return nil, nil, fmt.Errorf("metrics recorder does not provide an HTTP handler")
@@ -170,10 +192,13 @@ func startMetricsServer(ctx context.Context, opts MetricsOptions, recorder metri
 
 	mux := http.NewServeMux()
 	mux.Handle(path, provider.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	healthHandler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
-	})
+	}
+	mux.HandleFunc("/healthz", healthHandler)
+	mux.HandleFunc("/readyz", healthHandler)
 
 	listener, err := net.Listen("tcp", opts.ListenAddress)
 	if err != nil {
@@ -204,6 +229,7 @@ func (s *Server) handlePublicKey(ctx gossh.Context, key gossh.PublicKey) bool {
 	fingerprint := cryptossh.FingerprintSHA256(key)
 	info, err := s.authn.AuthenticatePublicKey(ctx, key)
 	if err != nil {
+		s.recordAuthentication(ctx, metrics.CredentialPublicKey, fingerprint, metrics.ResultRejected, nil, err)
 		s.metricsRecorder().AuthAttempt(metrics.CredentialPublicKey, metrics.ResultRejected)
 		slog.WarnContext(ctx, "public key rejected",
 			"fingerprint", fingerprint,
@@ -213,12 +239,14 @@ func (s *Server) handlePublicKey(ctx gossh.Context, key gossh.PublicKey) bool {
 		)
 		return false
 	}
+	s.recordAuthentication(ctx, metrics.CredentialPublicKey, fingerprint, metrics.ResultSuccess, info, nil)
 	return s.acceptAuthenticated(ctx, info, fingerprint, metrics.CredentialPublicKey)
 }
 
 func (s *Server) handlePassword(ctx gossh.Context, password string) bool {
 	info, err := s.authn.AuthenticateBasic(ctx, ctx.User(), password)
 	if err != nil {
+		s.recordAuthentication(ctx, metrics.CredentialPassword, "", metrics.ResultRejected, nil, err)
 		s.metricsRecorder().AuthAttempt(metrics.CredentialPassword, metrics.ResultRejected)
 		slog.WarnContext(ctx, "password rejected",
 			"user", ctx.User(),
@@ -227,6 +255,7 @@ func (s *Server) handlePassword(ctx gossh.Context, password string) bool {
 		)
 		return false
 	}
+	s.recordAuthentication(ctx, metrics.CredentialPassword, "", metrics.ResultSuccess, info, nil)
 	return s.acceptAuthenticated(ctx, info, "", metrics.CredentialPassword)
 }
 
@@ -241,6 +270,11 @@ func (s *Server) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticate
 		TargetHints:          info.TargetHints,
 	})
 	if err != nil {
+		event := s.connectionEvent(ctx, connectionAuditFromContext(ctx), "target_resolution.result")
+		event.Actor = auditActor(*info, publicKeyFingerprint)
+		event.Access = auditAccess(*info)
+		event.Outcome = &audit.Outcome{Result: metrics.ResultRejected, Error: err.Error()}
+		s.audit.Record(ctx, event)
 		s.metricsRecorder().AuthAttempt(credential, "target_rejected")
 		slog.WarnContext(ctx, "target resolution failed",
 			"user", ctx.User(),
@@ -248,6 +282,12 @@ func (s *Server) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticate
 		)
 		return false
 	}
+	targetEvent := s.connectionEvent(ctx, connectionAuditFromContext(ctx), "target_resolution.result")
+	targetEvent.Actor = auditActor(*info, publicKeyFingerprint)
+	targetEvent.Target = auditTarget(tgt)
+	targetEvent.Access = auditAccess(*info)
+	targetEvent.Outcome = &audit.Outcome{Result: metrics.ResultSuccess}
+	s.audit.Record(ctx, targetEvent)
 
 	policy, err := s.resolveSessionPolicy(ctx, ctx.User(), info.Extra)
 	if err != nil {
@@ -259,13 +299,19 @@ func (s *Server) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticate
 		)
 		return false
 	}
-	if policyConn, ok := PolicyConnFromContext(ctx); ok {
-		policyConn.ApplyPolicy(policy)
+	if sessionPolicyConn, ok := sessionPolicyConnFromContext(ctx); ok {
+		sessionPolicyConn.ApplyPolicy(policy)
 	}
 
 	WithAuthenticate(ctx, *info)
 	WithTarget(ctx, tgt)
 	WithSessionPolicy(ctx, policy)
+	WithAuditFingerprint(ctx, publicKeyFingerprint)
+	if state := connectionAuditFromContext(ctx); state != nil {
+		ready := s.connectionEvent(ctx, state, "connection.ready")
+		ready.Outcome = &audit.Outcome{Result: metrics.ResultSuccess}
+		s.audit.Record(ctx, ready)
+	}
 	recorder := s.metricsRecorder()
 	recorder.AuthAttempt(credential, metrics.ResultSuccess)
 	recorder.ConnectionOpened(info.Method)

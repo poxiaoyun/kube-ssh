@@ -80,6 +80,14 @@ login:
 test:
 	go test ./...
 
+BENCH ?= .
+BENCHTIME ?= 3s
+BENCH_COUNT ?= 3
+BENCH_ARGS ?=
+.PHONY: benchmark
+benchmark:
+	go test ./pkg/server ./pkg/audit -run '^$$' -bench '$(BENCH)' -benchmem -benchtime=$(BENCHTIME) -count=$(BENCH_COUNT) $(BENCH_ARGS)
+
 .PHONY: test-envtest
 test-envtest:
 	go test -tags=envtest ./pkg/server -run Envtest -count=1 -v

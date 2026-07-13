@@ -4,18 +4,28 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strconv"
 
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
 )
 
 type Authorizer struct {
-	store AccessGetter
+	store    AccessGetter
+	defaults CapabilityDefaults
 }
 
-func NewAuthorizer(store AccessGetter) *Authorizer {
-	return &Authorizer{store: store}
+type CapabilityDefaults struct {
+	Allow                    []sshv1.Capability
+	LocalForwardDestinations []string
+	RemoteForwardBinds       []string
+}
+
+func NewAuthorizer(store AccessGetter, defaults ...CapabilityDefaults) *Authorizer {
+	authorizer := &Authorizer{store: store}
+	if len(defaults) > 0 {
+		authorizer.defaults = defaults[0]
+	}
+	return authorizer
 }
 
 func (a *Authorizer) Authorize(ctx context.Context, req authz.Request) (authz.Decision, string, error) {
@@ -39,7 +49,11 @@ func (a *Authorizer) Authorize(ctx context.Context, req authz.Request) (authz.De
 	if credential == nil {
 		return authz.DecisionDeny, "authenticated credential no longer exists", nil
 	}
-	if allowed, reason := capabilityAllowed(credential.Capabilities, req.Attributes); !allowed {
+	container := resourceName(req.Attributes.Resources, "containers")
+	if container != "" && (!containerAllowed(access.Spec.Containers, container) || !containerAllowed(credential.Containers, container)) {
+		return authz.DecisionDeny, "container not allowed", nil
+	}
+	if allowed, reason := capabilityAllowed(credential.Capabilities, a.defaults, req.Attributes); !allowed {
 		return authz.DecisionDeny, reason, nil
 	}
 	return authz.DecisionAllow, "", nil
@@ -54,23 +68,35 @@ func findCredential(access *sshv1.Access, username string) *sshv1.AccessCredenti
 	return nil
 }
 
-func capabilityAllowed(policy sshv1.CapabilityPolicy, attrs authz.Attributes) (bool, string) {
+func capabilityAllowed(policy sshv1.CapabilityPolicy, defaults CapabilityDefaults, attrs authz.Attributes) (bool, string) {
 	capability := sshv1.Capability(attrs.Action)
-	if len(policy.Allow) > 0 && !containsCapability(policy.Allow, capability) {
+	allowedCapabilities := policy.Allow
+	if len(allowedCapabilities) == 0 {
+		allowedCapabilities = defaults.Allow
+	}
+	if len(allowedCapabilities) > 0 && !containsCapability(allowedCapabilities, capability) && !containsCapability(allowedCapabilities, "*") {
 		return false, "capability not allowed"
 	}
 	switch capability {
 	case sshv1.CapabilityLocalForward:
-		if policy.LocalForward != nil && len(policy.LocalForward.AllowPorts) > 0 {
-			port, err := strconv.ParseInt(firstExtra(attrs.Extra, "destination_port"), 10, 32)
-			if err != nil || !containsPort(policy.LocalForward.AllowPorts, int32(port)) {
-				return false, "local forward port not allowed"
+		allow := defaults.LocalForwardDestinations
+		if policy.LocalForward != nil && len(policy.LocalForward.AllowDestinations) > 0 {
+			allow = policy.LocalForward.AllowDestinations
+		}
+		if len(allow) > 0 {
+			destination := net.JoinHostPort(firstExtra(attrs.Extra, "destination_host"), firstExtra(attrs.Extra, "destination_port"))
+			if !bindAllowed(allow, destination) {
+				return false, "local forward destination not allowed"
 			}
 		}
 	case sshv1.CapabilityRemoteForward:
+		allow := defaults.RemoteForwardBinds
 		if policy.RemoteForward != nil && len(policy.RemoteForward.AllowBinds) > 0 {
+			allow = policy.RemoteForward.AllowBinds
+		}
+		if len(allow) > 0 {
 			bind := net.JoinHostPort(firstExtra(attrs.Extra, "bind_host"), firstExtra(attrs.Extra, "bind_port"))
-			if !bindAllowed(policy.RemoteForward.AllowBinds, bind) {
+			if !bindAllowed(allow, bind) {
 				return false, "remote forward bind not allowed"
 			}
 		}
@@ -81,15 +107,6 @@ func capabilityAllowed(policy sshv1.CapabilityPolicy, attrs authz.Attributes) (b
 func containsCapability(values []sshv1.Capability, capability sshv1.Capability) bool {
 	for _, value := range values {
 		if value == capability {
-			return true
-		}
-	}
-	return false
-}
-
-func containsPort(values []int32, port int32) bool {
-	for _, value := range values {
-		if value == port {
 			return true
 		}
 	}
@@ -116,4 +133,13 @@ func bindAllowed(patterns []string, bind string) bool {
 		}
 	}
 	return false
+}
+
+func resourceName(resources []authz.AttributeResource, resource string) string {
+	for _, item := range resources {
+		if item.Resource == resource {
+			return item.Name
+		}
+	}
+	return ""
 }

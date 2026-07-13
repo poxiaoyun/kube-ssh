@@ -1,19 +1,22 @@
 package server
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
+	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
 )
 
 func TestBuildAccessSessionPolicy(t *testing.T) {
 	opts := NewDefaultOptions()
-	opts.EnvAllowlist = []string{"LANG", "LC_*", "PATH"}
-	opts.SSH.IdleTimeout = time.Hour
-	opts.SSH.MaxDuration = 8 * time.Hour
+	opts.Policy.Limits.EnvAllowlist = []string{"LANG", "LC_*", "PATH"}
+	opts.Policy.Defaults.IdleTimeout = time.Hour
+	opts.Policy.Defaults.MaxDuration = 8 * time.Hour
+	opts.Policy.Limits.MaxDuration = 8 * time.Hour
 
 	access := &sshv1.Access{
 		Spec: sshv1.AccessSpec{
@@ -58,32 +61,9 @@ func TestBuildAccessSessionPolicy(t *testing.T) {
 	}
 }
 
-func TestBuildAccessSessionPolicyAgentForwarding(t *testing.T) {
-	enabled := true
-	disabled := false
-
-	opts := NewDefaultOptions()
-	opts.SSH.AgentForwarding = true
-	if policy := buildAccessSessionPolicy(opts, nil); !policy.AgentForwarding {
-		t.Fatal("global enabled AgentForwarding = false, want true")
-	}
-	if policy := buildAccessSessionPolicy(opts, &sshv1.Access{
-		Spec: sshv1.AccessSpec{Session: &sshv1.SessionPolicy{AgentForwarding: &disabled}},
-	}); policy.AgentForwarding {
-		t.Fatal("access disabled AgentForwarding = true, want false")
-	}
-
-	opts.SSH.AgentForwarding = false
-	if policy := buildAccessSessionPolicy(opts, &sshv1.Access{
-		Spec: sshv1.AccessSpec{Session: &sshv1.SessionPolicy{AgentForwarding: &enabled}},
-	}); policy.AgentForwarding {
-		t.Fatal("access enabled over global disabled AgentForwarding = true, want false")
-	}
-}
-
 func TestBuildAccessSessionPolicyEnvInheritanceAndExplicitEmpty(t *testing.T) {
 	opts := NewDefaultOptions()
-	opts.EnvAllowlist = []string{"*"}
+	opts.Policy.Defaults.EnvAllowlist = []string{"*"}
 
 	inherited := buildAccessSessionPolicy(opts, &sshv1.Access{
 		Spec: sshv1.AccessSpec{Session: &sshv1.SessionPolicy{}},
@@ -102,8 +82,8 @@ func TestBuildAccessSessionPolicyEnvInheritanceAndExplicitEmpty(t *testing.T) {
 
 func TestBuildAccessSessionPolicyAccessOnlyDurations(t *testing.T) {
 	opts := NewDefaultOptions()
-	opts.SSH.IdleTimeout = 0
-	opts.SSH.MaxDuration = 0
+	opts.Policy.Defaults.IdleTimeout = 0
+	opts.Policy.Defaults.MaxDuration = 0
 
 	policy := buildAccessSessionPolicy(opts, &sshv1.Access{
 		Spec: sshv1.AccessSpec{
@@ -122,10 +102,22 @@ func TestBuildAccessSessionPolicyAccessOnlyDurations(t *testing.T) {
 	}
 }
 
+func TestBuildAccessSessionPolicyOverridesDefaultsWithinLimits(t *testing.T) {
+	opts := NewDefaultOptions()
+	opts.Policy.Defaults.MaxDuration = time.Hour
+	opts.Policy.Limits.MaxDuration = 4 * time.Hour
+	policy := buildAccessSessionPolicy(opts, &sshv1.Access{Spec: sshv1.AccessSpec{Session: &sshv1.SessionPolicy{
+		MaxDuration: &metav1.Duration{Duration: 2 * time.Hour},
+	}}})
+	if policy.MaxDuration != 2*time.Hour {
+		t.Fatalf("MaxDuration = %s, want 2h", policy.MaxDuration)
+	}
+}
+
 func TestBuildAccessSessionPolicyZeroDurationCannotDisableGlobal(t *testing.T) {
 	opts := NewDefaultOptions()
-	opts.SSH.IdleTimeout = 20 * time.Minute
-	opts.SSH.MaxDuration = time.Hour
+	opts.Policy.Defaults.IdleTimeout = 20 * time.Minute
+	opts.Policy.Defaults.MaxDuration = time.Hour
 
 	policy := buildAccessSessionPolicy(opts, &sshv1.Access{
 		Spec: sshv1.AccessSpec{
@@ -141,5 +133,21 @@ func TestBuildAccessSessionPolicyZeroDurationCannotDisableGlobal(t *testing.T) {
 	}
 	if policy.MaxDuration != time.Hour {
 		t.Fatalf("MaxDuration = %s, want 1h", policy.MaxDuration)
+	}
+}
+
+func TestResolveSessionPolicyRejectsShellOutsideLimit(t *testing.T) {
+	opts := NewDefaultOptions()
+	opts.Policy.Limits.Shells = []string{"/bin/sh"}
+	s := &Server{opts: opts, accessPolicy: fakeAccessPolicyGetter{access: &sshv1.Access{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "notebook"},
+		Spec:       sshv1.AccessSpec{Session: &sshv1.SessionPolicy{DefaultShell: "/bin/bash"}},
+	}}}
+	_, err := s.resolveSessionPolicy(context.Background(), "default.notebook", map[string][]string{
+		accesspolicy.ExtraAccessNamespace: {"default"},
+		accesspolicy.ExtraAccessName:      {"notebook"},
+	})
+	if err == nil {
+		t.Fatal("resolveSessionPolicy() error = nil, want shell limit rejection")
 	}
 }

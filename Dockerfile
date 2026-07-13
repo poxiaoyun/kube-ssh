@@ -3,5 +3,5 @@ FROM docker.io/library/alpine:3.22
 ARG TARGETOS TARGETARCH
 COPY ${TARGETOS}-${TARGETARCH}/ /usr/local/bin/
 WORKDIR /app
-EXPOSE 22
+EXPOSE 22 8080
 ENTRYPOINT ["/usr/local/bin/kube-ssh"]

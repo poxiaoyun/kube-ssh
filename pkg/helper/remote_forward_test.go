@@ -2,6 +2,7 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strconv"
@@ -246,6 +247,45 @@ func TestRemoteForwardCancelIsIdempotent(t *testing.T) {
 	}
 	if err := forward.Cancel(ctx); err != nil {
 		t.Fatalf("second Cancel() error = %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunRuntime() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunRuntime() did not stop")
+	}
+}
+
+func TestRemoteForwardAcceptReturnsCanceledAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client, done := startRuntimeClient(t, ctx)
+	defer client.Close()
+
+	forward, err := client.RemoteForward(ctx, "127.0.0.1", 0)
+	if err != nil {
+		t.Fatalf("RemoteForward() error = %v", err)
+	}
+	acceptDone := make(chan error, 1)
+	go func() {
+		_, _, err := forward.Accept(context.Background())
+		acceptDone <- err
+	}()
+
+	if err := forward.Cancel(ctx); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	select {
+	case err := <-acceptDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Accept() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Accept() did not return after cancel")
 	}
 
 	select {

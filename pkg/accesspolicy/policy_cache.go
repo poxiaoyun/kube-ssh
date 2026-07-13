@@ -107,7 +107,7 @@ func (c *PolicyCache) MatchPassword(_ context.Context, token string) (*Credentia
 		return nil, err
 	}
 	sortMatches(matches)
-	return chooseMatch("password token", token, matches)
+	return chooseMatch("password token", matches)
 }
 
 func (c *PolicyCache) MatchPublicKey(_ context.Context, pubkey cryptossh.PublicKey) (*CredentialMatch, error) {
@@ -124,7 +124,7 @@ func (c *PolicyCache) MatchPublicKey(_ context.Context, pubkey cryptossh.PublicK
 		return nil, err
 	}
 	sortMatches(matches)
-	return chooseMatch("public key", fingerprint, matches)
+	return chooseMatch("public key", matches)
 }
 
 func (c *PolicyCache) matchAccessPassword(token string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
@@ -473,7 +473,7 @@ func stringSetValues(values map[string]struct{}) []string {
 	return out
 }
 
-func chooseMatch(kind, key string, matches []*CredentialMatch) (*CredentialMatch, error) {
+func chooseMatch(kind string, matches []*CredentialMatch) (*CredentialMatch, error) {
 	if len(matches) == 0 {
 		return nil, authn.ErrNotProvided
 	}
@@ -481,7 +481,6 @@ func chooseMatch(kind, key string, matches []*CredentialMatch) (*CredentialMatch
 		chosen := matches[0]
 		slog.Warn("duplicate access credential material, using oldest access",
 			"kind", kind,
-			"key", key,
 			"access", accessKey(chosen.Access.Namespace, chosen.Access.Name),
 			"credential", chosen.Credential.Username,
 			"matches", len(matches),

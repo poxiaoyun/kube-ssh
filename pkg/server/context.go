@@ -13,11 +13,31 @@ const (
 	targetContextKey       contextKey = "target"
 	requestTypeContextKey  contextKey = "request-type"
 	sessionPolicyKey       contextKey = "session-policy"
-	policyConnKey          contextKey = "policy-conn"
+	sessionPolicyConnKey   contextKey = "session-policy-conn"
+	connectionAuditKey     contextKey = "connection-audit"
+	auditFingerprintKey    contextKey = "audit-public-key-fingerprint"
 )
 
 func WithAuthenticate(ctx gossh.Context, info authn.AuthenticateInfo) {
 	ctx.SetValue(authenticateContextKey, info)
+}
+
+func WithAuditFingerprint(ctx gossh.Context, fingerprint string) {
+	ctx.SetValue(auditFingerprintKey, fingerprint)
+}
+
+func AuditFingerprintFromContext(ctx gossh.Context) string {
+	fingerprint, _ := ctx.Value(auditFingerprintKey).(string)
+	return fingerprint
+}
+
+func withConnectionAudit(ctx gossh.Context, state *connectionAuditState) {
+	ctx.SetValue(connectionAuditKey, state)
+}
+
+func connectionAuditFromContext(ctx gossh.Context) *connectionAuditState {
+	state, _ := ctx.Value(connectionAuditKey).(*connectionAuditState)
+	return state
 }
 
 func AuthenticateFromContext(ctx gossh.Context) (authn.AuthenticateInfo, bool) {
@@ -46,12 +66,12 @@ func SessionPolicyFromContext(ctx gossh.Context) effectiveSessionPolicy {
 	return policy
 }
 
-func WithPolicyConn(ctx gossh.Context, conn *policyConn) {
-	ctx.SetValue(policyConnKey, conn)
+func withSessionPolicyConn(ctx gossh.Context, conn *sessionPolicyConn) {
+	ctx.SetValue(sessionPolicyConnKey, conn)
 }
 
-func PolicyConnFromContext(ctx gossh.Context) (*policyConn, bool) {
-	conn, ok := ctx.Value(policyConnKey).(*policyConn)
+func sessionPolicyConnFromContext(ctx gossh.Context) (*sessionPolicyConn, bool) {
+	conn, ok := ctx.Value(sessionPolicyConnKey).(*sessionPolicyConn)
 	return conn, ok && conn != nil
 }
 

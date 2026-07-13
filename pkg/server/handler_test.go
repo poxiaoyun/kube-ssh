@@ -174,7 +174,7 @@ func TestForwardOperationSpecs(t *testing.T) {
 func TestAcceptAuthenticatedResolvesTargetWithIdentity(t *testing.T) {
 	ctx := newTestSSHContext()
 	resolver := &captureResolver{target: targetFixturePtr()}
-	s := &Server{resolver: resolver}
+	s := &Server{resolver: resolver, audit: audit.NopRecorder{}}
 	info := &authn.AuthenticateInfo{
 		User:   authn.UserInfo{Name: "alice", Groups: []string{"dev"}},
 		Method: "publickey",
@@ -225,8 +225,8 @@ func TestAcceptAuthenticatedResolvesTargetWithIdentity(t *testing.T) {
 func TestAcceptAuthenticatedAppliesAccessSessionPolicy(t *testing.T) {
 	ctx := newTestSSHContext()
 	opts := NewDefaultOptions()
-	opts.EnvAllowlist = []string{"LANG", "LC_*"}
-	opts.SSH.IdleTimeout = time.Hour
+	opts.Policy.Limits.EnvAllowlist = []string{"LANG", "LC_*"}
+	opts.Policy.Defaults.IdleTimeout = time.Hour
 	access := &sshv1.Access{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "notebook"},
 		Spec: sshv1.AccessSpec{
@@ -244,6 +244,7 @@ func TestAcceptAuthenticatedAppliesAccessSessionPolicy(t *testing.T) {
 		opts:         opts,
 		resolver:     &captureResolver{target: targetFixturePtr()},
 		accessPolicy: fakeAccessPolicyGetter{access: access},
+		audit:        audit.NopRecorder{},
 	}
 	info := &authn.AuthenticateInfo{
 		User:   authn.UserInfo{Name: "alice"},
@@ -292,6 +293,7 @@ func TestAcceptAuthenticatedAppliesAccessSessionPolicyFromSSHUser(t *testing.T) 
 		opts:         opts,
 		resolver:     &captureResolver{target: targetFixturePtr()},
 		accessPolicy: fakeAccessPolicyGetter{access: access},
+		audit:        audit.NopRecorder{},
 	}
 	info := &authn.AuthenticateInfo{
 		User:   authn.UserInfo{Name: "alice"},

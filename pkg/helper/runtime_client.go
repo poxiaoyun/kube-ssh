@@ -526,7 +526,7 @@ func (f *RemoteForward) Accept(ctx context.Context) (ioproxy.HalfCloser, RemoteF
 			return f.newStream(incoming), incoming.info, nil
 		}
 		if f.closed {
-			return nil, RemoteForwardConnInfo{}, fmt.Errorf("remote-forward canceled")
+			return nil, RemoteForwardConnInfo{}, context.Canceled
 		}
 		select {
 		case <-f.client.runtime.closed:

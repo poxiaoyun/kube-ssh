@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"sync"
 	"time"
 
 	gossh "github.com/gliderlabs/ssh"
@@ -31,6 +33,7 @@ type sessionContext struct {
 	session gossh.Session
 	// agentForward is the accepted agent forwarding socket for this session.
 	agentForward backend.AgentForward
+	operationID  string
 }
 
 type operationSpec struct {
@@ -65,7 +68,6 @@ func (s *Server) handleExecOperation(sess gossh.Session, resolve execOperationRe
 	reason, allowed := s.authorizeOperation(sc, spec)
 	if !allowed {
 		sc.audit.Fields["exit_code"] = "1"
-		s.audit.Record(sess.Context(), sc.audit)
 		finishOperation(metrics.ResultDenied)
 		_, _ = fmt.Fprintln(sess.Stderr(), reason)
 		_ = sess.Exit(1)
@@ -84,7 +86,6 @@ func (s *Server) handleExecOperation(sess gossh.Session, resolve execOperationRe
 		slog.InfoContext(sess.Context(), spec.name+" end", operationLogFields(sc, spec)...)
 	}
 	sc.audit.Type = spec.name + "_end"
-	s.audit.Record(sess.Context(), sc.audit)
 	finishOperation(resultFromExit(exitCode, execErr))
 	_ = sess.Exit(exitCode)
 }
@@ -108,7 +109,6 @@ func (s *Server) handleStreamOperation(sess gossh.Session, resolve func(*session
 	reason, allowed := s.authorizeOperation(sc, spec)
 	if !allowed {
 		sc.audit.Fields["exit_code"] = "1"
-		s.audit.Record(sess.Context(), sc.audit)
 		finishOperation(metrics.ResultDenied)
 		_, _ = fmt.Fprintln(sess.Stderr(), reason)
 		_ = sess.Exit(1)
@@ -126,7 +126,6 @@ func (s *Server) handleStreamOperation(sess gossh.Session, resolve func(*session
 		slog.InfoContext(sess.Context(), spec.name+" end", operationLogFields(sc, spec)...)
 	}
 	sc.audit.Type = spec.name + "_end"
-	s.audit.Record(sess.Context(), sc.audit)
 	finishOperation(resultFromExit(exitCode, execErr))
 	_ = sess.Exit(exitCode)
 }
@@ -187,6 +186,8 @@ func (s *Server) authorizeOperation(sc *sessionContext, spec operationSpec) (str
 	if err != nil {
 		reason = err.Error()
 	}
+	sc.audit.Fields["decision"] = string(decision)
+	sc.audit.Fields["reason"] = reason
 	if decision == authz.DecisionAllow {
 		return "", true
 	}
@@ -195,7 +196,6 @@ func (s *Server) authorizeOperation(sc *sessionContext, spec operationSpec) (str
 	}
 
 	sc.audit.Type = spec.name + "_denied"
-	sc.audit.Fields["decision"] = string(decision)
 	sc.audit.Fields["reason"] = reason
 	return reason, false
 }
@@ -221,10 +221,54 @@ func (s *Server) startOperation(sc *sessionContext, spec operationSpec) func(str
 	kind := sc.target.Kind
 	capability := string(spec.capability)
 	start := time.Now()
+	operationID := audit.NewID()
+	sc.operationID = operationID
+	startEvent := s.operationEvent(sc, spec, "operation.start")
+	s.audit.Record(sc.ctx, startEvent)
 	recorder.OperationStarted(kind, capability)
+	var once sync.Once
 	return func(result string) {
-		recorder.OperationFinished(kind, capability, result, time.Since(start))
+		once.Do(func() {
+			duration := time.Since(start)
+			recorder.OperationFinished(kind, capability, result, duration)
+			endEvent := s.operationEvent(sc, spec, "operation.end")
+			endEvent.Outcome = &audit.Outcome{Result: result, DurationMS: duration.Milliseconds(), Error: sc.audit.Fields["error"]}
+			if reason := sc.audit.Fields["reason"]; reason != "" {
+				endEvent.Outcome.Reason = reason
+			}
+			if value := sc.audit.Fields["exit_code"]; value != "" {
+				if code, err := strconv.Atoi(value); err == nil {
+					endEvent.Outcome.ExitCode = &code
+				}
+			}
+			s.audit.Record(sc.ctx, endEvent)
+		})
 	}
+}
+
+func (s *Server) operationEvent(sc *sessionContext, spec operationSpec, eventType string) audit.Event {
+	event := s.connectionEvent(sc.ctx, connectionAuditFromContext(sc.ctx), eventType)
+	event.Correlation.OperationID = sc.operationID
+	if event.Actor == nil {
+		event.Actor = auditActor(sc.info, "")
+	}
+	event.Target = auditTarget(sc.target)
+	event.Operation = &audit.Operation{Name: spec.name, Capability: string(spec.capability), Command: spec.auditFields["command"]}
+	event.Fields = make(map[string]string, len(spec.auditFields))
+	for key, value := range spec.auditFields {
+		event.Fields[key] = value
+	}
+	for key, value := range sc.audit.Fields {
+		switch key {
+		case "capability", "decision", "reason", "error", "exit_code":
+			continue
+		}
+		event.Fields[key] = value
+	}
+	if decision := sc.audit.Fields["decision"]; decision != "" {
+		event.Authorization = &audit.Authorization{Decision: decision, Reason: sc.audit.Fields["reason"]}
+	}
+	return event
 }
 
 func resultFromExit(exitCode int, err error) string {

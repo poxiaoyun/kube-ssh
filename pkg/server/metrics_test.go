@@ -10,7 +10,7 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 )
 
-func TestStartMetricsServerServesMetricsAndHealthz(t *testing.T) {
+func TestStartMetricsServerServesMetricsAndHealthChecks(t *testing.T) {
 	recorder := metrics.NewPrometheusRecorder(nil, metrics.PrometheusOptions{})
 	srv, listener, err := startMetricsServer(context.Background(), MetricsOptions{
 		ListenAddress: "127.0.0.1:0",
@@ -33,6 +33,9 @@ func TestStartMetricsServerServesMetricsAndHealthz(t *testing.T) {
 	if body := httpGet(t, "http://"+listener.Addr().String()+"/healthz"); body != "ok\n" {
 		t.Fatalf("healthz body = %q, want ok", body)
 	}
+	if body := httpGet(t, "http://"+listener.Addr().String()+"/readyz"); body != "ok\n" {
+		t.Fatalf("readyz body = %q, want ok", body)
+	}
 
 	shutdownHTTPServer(srv)
 	if err := <-serveErr; err != nil && err != http.ErrServerClosed {
@@ -41,12 +44,16 @@ func TestStartMetricsServerServesMetricsAndHealthz(t *testing.T) {
 }
 
 func TestStartMetricsServerRejectsInvalidPath(t *testing.T) {
-	_, _, err := startMetricsServer(context.Background(), MetricsOptions{
-		ListenAddress: "127.0.0.1:0",
-		Path:          "metrics",
-	}, metrics.NewPrometheusRecorder(nil, metrics.PrometheusOptions{}))
-	if err == nil {
-		t.Fatal("startMetricsServer() error = nil, want error")
+	for _, path := range []string{"metrics", "/healthz", "/readyz"} {
+		t.Run(path, func(t *testing.T) {
+			_, _, err := startMetricsServer(context.Background(), MetricsOptions{
+				ListenAddress: "127.0.0.1:0",
+				Path:          path,
+			}, metrics.NewPrometheusRecorder(nil, metrics.PrometheusOptions{}))
+			if err == nil {
+				t.Fatal("startMetricsServer() error = nil, want error")
+			}
+		})
 	}
 }
 

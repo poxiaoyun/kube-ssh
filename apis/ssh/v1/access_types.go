@@ -63,6 +63,13 @@ type AccessSpec struct {
 	// Session defines defaults used for shell and exec sessions.
 	Session *SessionPolicy `json:"session,omitempty"`
 
+	// Containers limits the regular Pod containers exposed by this Access.
+	// Omitted or empty inherits the gateway default container policy. A
+	// credential may further narrow this list, but cannot expand it.
+	//
+	// +listType=set
+	Containers []string `json:"containers,omitempty"`
+
 	// Credentials are accepted authentication material for this access object.
 	// They prove possession of a password, key, or referenced secret, but
 	// only produce the local user identity declared on the same credential entry.
@@ -224,12 +231,6 @@ type SessionPolicy struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Format=duration
 	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
-
-	// AgentForwarding controls whether SSH agent forwarding may be requested for
-	// this Access. When omitted, kube-ssh uses the server-wide setting. Setting
-	// this field to true cannot enable agent forwarding when it is disabled
-	// server-wide; setting it to false disables agent forwarding for this Access.
-	AgentForwarding *bool `json:"agentForwarding,omitempty"`
 }
 
 // AccessCredential is one accepted credential rule for this access object.
@@ -267,6 +268,12 @@ type AccessCredential struct {
 
 	// Credential provides credential material directly on this access credential.
 	Credential `json:",inline"`
+
+	// Containers limits this credential to named regular Pod containers. Omitted
+	// or empty inherits the Access container policy.
+	//
+	// +listType=set
+	Containers []string `json:"containers,omitempty"`
 
 	// Capabilities limits what this credential can do on the target.
 	Capabilities CapabilityPolicy `json:"capabilities,omitempty"`
@@ -362,13 +369,15 @@ const (
 
 // LocalForwardPolicy restricts direct-tcpip requests.
 type LocalForwardPolicy struct {
-	// AllowPorts are destination ports allowed for Pod-local forwarding. Empty
-	// means any Pod-local port is allowed.
+	// AllowDestinations are allowed host:port expressions. Examples:
+	//   - "127.0.0.1:8080"
+	//   - "*:8080"
+	//   - "*:*"
+	//
+	// Empty means any destination accepted by the backend is allowed.
 	//
 	// +listType=set
-	// +kubebuilder:validation:items:Minimum=1
-	// +kubebuilder:validation:items:Maximum=65535
-	AllowPorts []int32 `json:"allowPorts,omitempty"`
+	AllowDestinations []string `json:"allowDestinations,omitempty"`
 }
 
 // RemoteForwardPolicy restricts tcpip-forward requests.

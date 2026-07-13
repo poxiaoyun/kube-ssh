@@ -76,37 +76,47 @@ imagePullSecrets:
 {{- end -}}
 {{- end -}}
 
-{{- define "kube-ssh.webhookArgs" -}}
+{{- define "kube-ssh.webhookEnv" -}}
 {{- $prefix := .prefix -}}
 {{- $webhook := .webhook -}}
 {{- with $webhook.server }}
-- {{ printf "--%s-webhook-server=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_SERVER" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.proxyURL }}
-- {{ printf "--%s-webhook-proxy-url=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_PROXY_URL" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.token }}
-- {{ printf "--%s-webhook-token=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_TOKEN" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.username }}
-- {{ printf "--%s-webhook-username=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_USERNAME" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.password }}
-- {{ printf "--%s-webhook-password=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_PASSWORD" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.caFile }}
-- {{ printf "--%s-webhook-ca-file=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_CA_FILE" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.certFile }}
-- {{ printf "--%s-webhook-cert-file=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_CERT_FILE" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- with $webhook.keyFile }}
-- {{ printf "--%s-webhook-key-file=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_KEY_FILE" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- if $webhook.insecureSkipTLSVerify }}
-- {{ printf "--%s-webhook-insecure-skip-tls-verify=true" $prefix | quote }}
+- name: {{ printf "%s_WEBHOOK_INSECURE_SKIP_TLS_VERIFY" (upper $prefix) }}
+  value: "true"
 {{- end }}
 {{- with $webhook.timeout }}
-- {{ printf "--%s-webhook-timeout=%s" $prefix . | quote }}
+- name: {{ printf "%s_WEBHOOK_TIMEOUT" (upper $prefix) }}
+  value: {{ . | quote }}
 {{- end }}
 {{- end -}}

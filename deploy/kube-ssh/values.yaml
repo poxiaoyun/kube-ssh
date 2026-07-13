@@ -20,6 +20,11 @@ kubeSsh:
 
   containerPorts:
     ssh: 22
+    metrics: 8080
+
+  metrics:
+    enabled: true
+    path: /metrics
 
   service:
     type: ClusterIP
@@ -49,10 +54,25 @@ kubeSsh:
     path: /usr/local/bin/kube-ssh-helper
     remoteDir: /tmp
 
-  ssh:
-    idleTimeout: ""
-    maxDuration: ""
-    agentForwarding: false
+  policy:
+    defaults:
+      containerMode: KubernetesDefault
+      capabilities: ["*"]
+      envAllowlist: ["*"]
+      localForwardDestinations: ["*"]
+      remoteForwardBinds: ["*"]
+      defaultShell: /bin/sh
+      idleTimeout: ""
+      maxDuration: ""
+    limits:
+      containerMode: All
+      capabilities: ["*"]
+      envAllowlist: ["*"]
+      localForwardDestinations: ["*"]
+      remoteForwardBinds: ["*"]
+      shells: ["*"]
+      idleTimeout: ""
+      maxDuration: ""
 
   accessPolicy:
     enabled: true
@@ -77,8 +97,6 @@ kubeSsh:
   authorization:
     allowAll: false
     kubernetesSAR: true
-    allow: []
-    deny: []
     webhook:
       server: ""
       proxyURL: ""

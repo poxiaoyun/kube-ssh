@@ -68,66 +68,33 @@ spec:
         - name: kube-ssh
           image: {{ include "kube-ssh.image" . | quote }}
           imagePullPolicy: {{ .Values.kubeSsh.image.pullPolicy | quote }}
-          command:
-            - /usr/local/bin/kube-ssh
+          {{- with .Values.kubeSsh.extraArgs }}
           args:
-            - {{ printf "--listen-address=:%v" .Values.kubeSsh.containerPorts.ssh | quote }}
-            {{- with .Values.kubeSsh.ssh.idleTimeout }}
-            - {{ printf "--ssh-idle-timeout=%s" . | quote }}
-            {{- end }}
-            {{- with .Values.kubeSsh.ssh.maxDuration }}
-            - {{ printf "--ssh-max-duration=%s" . | quote }}
-            {{- end }}
-            {{- if .Values.kubeSsh.ssh.agentForwarding }}
-            - "--ssh-agent-forwarding=true"
-            {{- end }}
-            - {{ printf "--helper-path=%s" .Values.kubeSsh.helper.path | quote }}
-            - {{ printf "--helper-remote-dir=%s" .Values.kubeSsh.helper.remoteDir | quote }}
-            - {{ printf "--access-policy-enabled=%t" .Values.kubeSsh.accessPolicy.enabled | quote }}
-            {{- with .Values.kubeSsh.accessPolicy.namespace }}
-            - {{ printf "--access-policy-namespace=%s" . | quote }}
-            {{- end }}
-            - {{ printf "--authentication-anonymous=%t" .Values.kubeSsh.authentication.anonymous | quote }}
-            {{- range .Values.kubeSsh.authentication.authorizedKeys }}
-            - {{ printf "--authorized-key=%s" . | quote }}
-            {{- end }}
-            {{- range .Values.kubeSsh.authentication.passwords }}
-            - {{ printf "--authentication-password=%s" . | quote }}
-            {{- end }}
-            {{- $authenticationWebhookArgs := include "kube-ssh.webhookArgs" (dict "prefix" "authentication" "webhook" .Values.kubeSsh.authentication.webhook) }}
-            {{- if $authenticationWebhookArgs }}
-            {{- $authenticationWebhookArgs | nindent 12 }}
-            {{- end }}
-            - {{ printf "--authorization-allow-all=%t" .Values.kubeSsh.authorization.allowAll | quote }}
-            - {{ printf "--authorization-kubernetes-sar=%t" .Values.kubeSsh.authorization.kubernetesSAR | quote }}
-            {{- range .Values.kubeSsh.authorization.allow }}
-            - {{ printf "--authorization-allow=%s" . | quote }}
-            {{- end }}
-            {{- range .Values.kubeSsh.authorization.deny }}
-            - {{ printf "--authorization-deny=%s" . | quote }}
-            {{- end }}
-            {{- $authorizationWebhookArgs := include "kube-ssh.webhookArgs" (dict "prefix" "authorization" "webhook" .Values.kubeSsh.authorization.webhook) }}
-            {{- if $authorizationWebhookArgs }}
-            {{- $authorizationWebhookArgs | nindent 12 }}
-            {{- end }}
-            {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey }}
-            - {{ printf "--host-key-file=%s/%s" .Values.kubeSsh.hostKey.mountPath .Values.kubeSsh.hostKey.secretKey | quote }}
-            {{- end }}
-            {{- range .Values.kubeSsh.extraArgs }}
-            - {{ . | quote }}
-            {{- end }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: ssh
               containerPort: {{ .Values.kubeSsh.containerPorts.ssh }}
               protocol: TCP
+            {{- if .Values.kubeSsh.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.kubeSsh.containerPorts.metrics }}
+              protocol: TCP
+            {{- end }}
           {{- with .Values.kubeSsh.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- if .Values.kubeSsh.livenessProbe.enabled }}
           livenessProbe:
+            {{- if .Values.kubeSsh.metrics.enabled }}
+            httpGet:
+              path: /healthz
+              port: metrics
+            {{- else }}
             tcpSocket:
               port: ssh
+            {{- end }}
             initialDelaySeconds: {{ .Values.kubeSsh.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.kubeSsh.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.kubeSsh.livenessProbe.timeoutSeconds }}
@@ -136,8 +103,14 @@ spec:
           {{- end }}
           {{- if .Values.kubeSsh.readinessProbe.enabled }}
           readinessProbe:
+            {{- if .Values.kubeSsh.metrics.enabled }}
+            httpGet:
+              path: /readyz
+              port: metrics
+            {{- else }}
             tcpSocket:
               port: ssh
+            {{- end }}
             initialDelaySeconds: {{ .Values.kubeSsh.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.kubeSsh.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.kubeSsh.readinessProbe.timeoutSeconds }}
@@ -152,10 +125,124 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.kubeSsh.extraEnvVars }}
           env:
+            - name: LISTEN_ADDRESS
+              value: {{ printf ":%v" .Values.kubeSsh.containerPorts.ssh | quote }}
+            {{- if .Values.kubeSsh.metrics.enabled }}
+            - name: METRICS_LISTEN_ADDRESS
+              value: {{ printf ":%v" .Values.kubeSsh.containerPorts.metrics | quote }}
+            {{- with .Values.kubeSsh.metrics.path }}
+            - name: METRICS_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.containerMode }}
+            - name: POLICY_DEFAULT_CONTAINER_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.capabilities }}
+            - name: POLICY_DEFAULT_CAPABILITY
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.envAllowlist }}
+            - name: POLICY_DEFAULT_ENV
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.localForwardDestinations }}
+            - name: POLICY_DEFAULT_LOCAL_FORWARD
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.remoteForwardBinds }}
+            - name: POLICY_DEFAULT_REMOTE_FORWARD
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.defaultShell }}
+            - name: POLICY_DEFAULT_SHELL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.idleTimeout }}
+            - name: POLICY_DEFAULT_IDLE_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.defaults.maxDuration }}
+            - name: POLICY_DEFAULT_MAX_DURATION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.containerMode }}
+            - name: POLICY_LIMIT_CONTAINER_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.capabilities }}
+            - name: POLICY_LIMIT_CAPABILITY
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.envAllowlist }}
+            - name: POLICY_LIMIT_ENV
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.localForwardDestinations }}
+            - name: POLICY_LIMIT_LOCAL_FORWARD
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.remoteForwardBinds }}
+            - name: POLICY_LIMIT_REMOTE_FORWARD
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.shells }}
+            - name: POLICY_LIMIT_SHELL
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.idleTimeout }}
+            - name: POLICY_LIMIT_IDLE_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.policy.limits.maxDuration }}
+            - name: POLICY_LIMIT_MAX_DURATION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.helper.path }}
+            - name: HELPER_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.helper.remoteDir }}
+            - name: HELPER_REMOTE_DIR
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ACCESS_POLICY_ENABLED
+              value: {{ .Values.kubeSsh.accessPolicy.enabled | quote }}
+            {{- with .Values.kubeSsh.accessPolicy.namespace }}
+            - name: ACCESS_POLICY_NAMESPACE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: AUTHENTICATION_ANONYMOUS
+              value: {{ .Values.kubeSsh.authentication.anonymous | quote }}
+            {{- with .Values.kubeSsh.authentication.authorizedKeys }}
+            - name: AUTHORIZED_KEY
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.authentication.passwords }}
+            - name: AUTHENTICATION_PASSWORD
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- $authenticationWebhookEnv := include "kube-ssh.webhookEnv" (dict "prefix" "authentication" "webhook" .Values.kubeSsh.authentication.webhook) }}
+            {{- if $authenticationWebhookEnv }}
+            {{- $authenticationWebhookEnv | nindent 12 }}
+            {{- end }}
+            - name: AUTHORIZATION_ALLOW_ALL
+              value: {{ .Values.kubeSsh.authorization.allowAll | quote }}
+            - name: AUTHORIZATION_KUBERNETES_SAR
+              value: {{ .Values.kubeSsh.authorization.kubernetesSAR | quote }}
+            {{- $authorizationWebhookEnv := include "kube-ssh.webhookEnv" (dict "prefix" "authorization" "webhook" .Values.kubeSsh.authorization.webhook) }}
+            {{- if $authorizationWebhookEnv }}
+            {{- $authorizationWebhookEnv | nindent 12 }}
+            {{- end }}
+            {{- if or .Values.kubeSsh.hostKey.existingSecret .Values.kubeSsh.hostKey.privateKey }}
+            - name: HOST_KEY_FILE
+              value: {{ printf "%s/%s" .Values.kubeSsh.hostKey.mountPath .Values.kubeSsh.hostKey.secretKey | quote }}
+            {{- end }}
+            {{- with .Values.kubeSsh.extraEnvVars }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           {{- if or .Values.kubeSsh.extraEnvVarsCM .Values.kubeSsh.extraEnvVarsSecret }}
           envFrom:
             {{- with .Values.kubeSsh.extraEnvVarsCM }}

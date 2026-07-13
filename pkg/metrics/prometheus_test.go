@@ -19,6 +19,7 @@ func TestPrometheusRecorderRecordsLowCardinalityMetrics(t *testing.T) {
 		},
 	})
 
+	recorder.AuditDelivery("written")
 	recorder.AuthAttempt(CredentialPassword, ResultSuccess)
 	recorder.ConnectionOpened("password")
 	recorder.ConnectionClosed("password")
@@ -43,6 +44,9 @@ func TestPrometheusRecorderRecordsLowCardinalityMetrics(t *testing.T) {
 	}
 	if got := metricValue(t, families, "test_kube_ssh_auth_attempts_total", labels{"credential": "password", "result": "success"}); got != 1 {
 		t.Fatalf("auth attempts = %v, want 1", got)
+	}
+	if got := metricValue(t, families, "test_kube_ssh_audit_events_total", labels{"result": "written"}); got != 1 {
+		t.Fatalf("audit events = %v, want 1", got)
 	}
 	if got := metricValue(t, families, "test_kube_ssh_connections_total", labels{"method": "password"}); got != 1 {
 		t.Fatalf("connections = %v, want 1", got)

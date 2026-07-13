@@ -36,7 +36,6 @@ func (s *Server) handleDirectTCPIP(_ *gossh.Server, _ *cryptossh.ServerConn, new
 	finishOperation := s.startOperation(sc, spec)
 	reason, allowed := s.authorizeOperation(sc, spec)
 	if !allowed {
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultDenied)
 		_ = newChan.Reject(cryptossh.Prohibited, reason)
 		return
@@ -50,7 +49,6 @@ func (s *Server) handleDirectTCPIP(_ *gossh.Server, _ *cryptossh.ServerConn, new
 	if err != nil {
 		sc.audit.Type = spec.name + "_error"
 		sc.audit.Fields["error"] = err.Error()
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultError)
 		_ = newChan.Reject(cryptossh.ConnectionFailed, err.Error())
 		return
@@ -81,7 +79,6 @@ func (s *Server) handleDirectTCPIP(_ *gossh.Server, _ *cryptossh.ServerConn, new
 	} else {
 		slog.InfoContext(ctx, spec.name+" end", operationLogFields(sc, spec)...)
 	}
-	s.audit.Record(ctx, sc.audit)
 	finishOperation(resultFromError(proxyErr))
 }
 

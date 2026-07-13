@@ -43,19 +43,8 @@ func (s *Server) acceptAgentForward(ctx gossh.Context, conn *cryptossh.ServerCon
 
 	spec := agentForwardOperationSpec(sc)
 	finishOperation := s.startOperation(sc, spec)
-	if !SessionPolicyFromContext(ctx).AgentForwarding {
-		sc.audit.Type = spec.name + "_denied"
-		sc.audit.Fields["capability"] = string(spec.capability)
-		sc.audit.Fields["decision"] = string(authz.DecisionDeny)
-		sc.audit.Fields["reason"] = "agent forwarding disabled"
-		s.audit.Record(ctx, sc.audit)
-		finishOperation(metrics.ResultDenied)
-		return nil, false
-	}
-
 	reason, allowed := s.authorizeOperation(sc, spec)
 	if !allowed {
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultDenied)
 		slog.WarnContext(ctx, "agent forwarding denied", append(operationLogFields(sc, spec), "reason", reason)...)
 		return nil, false
@@ -65,7 +54,6 @@ func (s *Server) acceptAgentForward(ctx gossh.Context, conn *cryptossh.ServerCon
 	if err != nil {
 		sc.audit.Type = spec.name + "_error"
 		sc.audit.Fields["error"] = err.Error()
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultError)
 		slog.ErrorContext(ctx, "agent forwarding failed", append(operationLogFields(sc, spec), "err", err)...)
 		return nil, false
@@ -80,7 +68,6 @@ func (s *Server) acceptAgentForward(ctx gossh.Context, conn *cryptossh.ServerCon
 	}
 	sc.audit.Type = spec.name + "_start"
 	sc.audit.Fields["socket_path"] = forward.SocketPath()
-	s.audit.Record(ctx, sc.audit)
 	slog.InfoContext(ctx, "agent forwarding start", append(operationLogFields(sc, spec), "socket_path", forward.SocketPath())...)
 
 	go s.serveAgentForward(ctx, conn, state)
@@ -91,7 +78,6 @@ func (s *Server) serveAgentForward(ctx gossh.Context, conn *cryptossh.ServerConn
 	result := metrics.ResultSuccess
 	defer func() {
 		state.sc.audit.Type = state.spec.name + "_end"
-		s.audit.Record(ctx, state.sc.audit)
 		state.finish(result)
 		close(state.done)
 	}()

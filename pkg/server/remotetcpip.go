@@ -55,7 +55,6 @@ func (s *Server) handleTCPIPForward(ctx gossh.Context, _ *gossh.Server, req *cry
 	finishOperation := s.startOperation(sc, spec)
 	reason, allowed := s.authorizeOperation(sc, spec)
 	if !allowed {
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultDenied)
 		slog.WarnContext(ctx, "tcpip-forward denied", append(operationLogFields(sc, spec), "reason", reason)...)
 		return false, nil
@@ -69,7 +68,6 @@ func (s *Server) handleTCPIPForward(ctx gossh.Context, _ *gossh.Server, req *cry
 	if err != nil {
 		sc.audit.Type = spec.name + "_error"
 		sc.audit.Fields["error"] = err.Error()
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultError)
 		slog.ErrorContext(ctx, "tcpip-forward failed", append(operationLogFields(sc, spec), "err", err)...)
 		return false, nil
@@ -82,14 +80,12 @@ func (s *Server) handleTCPIPForward(ctx gossh.Context, _ *gossh.Server, req *cry
 		_ = forward.Close()
 		sc.audit.Type = spec.name + "_error"
 		sc.audit.Fields["error"] = "remote forward already exists"
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(metrics.ResultDuplicate)
 		return false, nil
 	}
 
 	sc.audit.Type = spec.name + "_start"
 	sc.audit.Fields["actual_port"] = strconv.FormatUint(uint64(actualPort), 10)
-	s.audit.Record(ctx, sc.audit)
 	slog.InfoContext(ctx, "remote forward start", append(operationLogFields(sc, spec), "actual_port", actualPort)...)
 
 	go s.serveRemoteForward(ctx, conn, state, bind, data.BindAddr, actualPort, forward, sc, spec, finishOperation)
@@ -131,7 +127,6 @@ func (s *Server) serveRemoteForward(ctx gossh.Context, conn *cryptossh.ServerCon
 			_ = f.Close()
 		}
 		sc.audit.Type = spec.name + "_end"
-		s.audit.Record(ctx, sc.audit)
 		finishOperation(result)
 	}()
 

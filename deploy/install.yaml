@@ -60,6 +60,15 @@ spec:
           spec:
             description: AccessSpec is the desired access surface.
             properties:
+              containers:
+                description: |-
+                  Containers limits the regular Pod containers exposed by this Access.
+                  Omitted or empty inherits the gateway default container policy. A
+                  credential may further narrow this list, but cannot expand it.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               credentials:
                 description: |-
                   Credentials are accepted authentication material for this access object.
@@ -106,15 +115,16 @@ spec:
                             LocalForward restricts direct-tcpip forwarding when set. If omitted,
                             local forwarding is not additionally restricted by this access object.
                           properties:
-                            allowPorts:
+                            allowDestinations:
                               description: |-
-                                AllowPorts are destination ports allowed for Pod-local forwarding. Empty
-                                means any Pod-local port is allowed.
+                                AllowDestinations are allowed host:port expressions. Examples:
+                                  - "127.0.0.1:8080"
+                                  - "*:8080"
+                                  - "*:*"
+
+                                Empty means any destination accepted by the backend is allowed.
                               items:
-                                format: int32
-                                maximum: 65535
-                                minimum: 1
-                                type: integer
+                                type: string
                               type: array
                               x-kubernetes-list-type: set
                           type: object
@@ -137,6 +147,14 @@ spec:
                               x-kubernetes-list-type: set
                           type: object
                       type: object
+                    containers:
+                      description: |-
+                        Containers limits this credential to named regular Pod containers. Omitted
+                        or empty inherits the Access container policy.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
                     extra:
                       additionalProperties:
                         items:
@@ -410,13 +428,6 @@ spec:
               session:
                 description: Session defines defaults used for shell and exec sessions.
                 properties:
-                  agentForwarding:
-                    description: |-
-                      AgentForwarding controls whether SSH agent forwarding may be requested for
-                      this Access. When omitted, kube-ssh uses the server-wide setting. Setting
-                      this field to true cannot enable agent forwarding when it is disabled
-                      server-wide; setting it to false disables agent forwarding for this Access.
-                    type: boolean
                   defaultShell:
                     description: |-
                       DefaultShell is used for shell sessions and as the shell for "sh -c" style
@@ -774,19 +785,12 @@ spec:
         - name: kube-ssh
           image: "registry.cn-hangzhou.aliyuncs.com/xiaoshiai/kube-ssh:v0.0.0"
           imagePullPolicy: "IfNotPresent"
-          command:
-            - /usr/local/bin/kube-ssh
-          args:
-            - "--listen-address=:22"
-            - "--helper-path=/usr/local/bin/kube-ssh-helper"
-            - "--helper-remote-dir=/tmp"
-            - "--access-policy-enabled=true"
-            - "--authentication-anonymous=false"
-            - "--authorization-allow-all=false"
-            - "--authorization-kubernetes-sar=true"
           ports:
             - name: ssh
               containerPort: 22
+              protocol: TCP
+            - name: metrics
+              containerPort: 8080
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
@@ -796,16 +800,18 @@ spec:
               drop:
               - ALL
           livenessProbe:
-            tcpSocket:
-              port: ssh
+            httpGet:
+              path: /healthz
+              port: metrics
             initialDelaySeconds: 10
             periodSeconds: 30
             timeoutSeconds: 1
             failureThreshold: 3
             successThreshold: 1
           readinessProbe:
-            tcpSocket:
-              port: ssh
+            httpGet:
+              path: /readyz
+              port: metrics
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 1
@@ -814,3 +820,46 @@ spec:
           resources:
             limits: {}
             requests: {}
+          env:
+            - name: LISTEN_ADDRESS
+              value: ":22"
+            - name: METRICS_LISTEN_ADDRESS
+              value: ":8080"
+            - name: METRICS_PATH
+              value: "/metrics"
+            - name: POLICY_DEFAULT_CONTAINER_MODE
+              value: "KubernetesDefault"
+            - name: POLICY_DEFAULT_CAPABILITY
+              value: "*"
+            - name: POLICY_DEFAULT_ENV
+              value: "*"
+            - name: POLICY_DEFAULT_LOCAL_FORWARD
+              value: "*"
+            - name: POLICY_DEFAULT_REMOTE_FORWARD
+              value: "*"
+            - name: POLICY_DEFAULT_SHELL
+              value: "/bin/sh"
+            - name: POLICY_LIMIT_CONTAINER_MODE
+              value: "All"
+            - name: POLICY_LIMIT_CAPABILITY
+              value: "*"
+            - name: POLICY_LIMIT_ENV
+              value: "*"
+            - name: POLICY_LIMIT_LOCAL_FORWARD
+              value: "*"
+            - name: POLICY_LIMIT_REMOTE_FORWARD
+              value: "*"
+            - name: POLICY_LIMIT_SHELL
+              value: "*"
+            - name: HELPER_PATH
+              value: "/usr/local/bin/kube-ssh-helper"
+            - name: HELPER_REMOTE_DIR
+              value: "/tmp"
+            - name: ACCESS_POLICY_ENABLED
+              value: "true"
+            - name: AUTHENTICATION_ANONYMOUS
+              value: "false"
+            - name: AUTHORIZATION_ALLOW_ALL
+              value: "false"
+            - name: AUTHORIZATION_KUBERNETES_SAR
+              value: "true"

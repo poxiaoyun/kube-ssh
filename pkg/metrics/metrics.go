@@ -10,6 +10,7 @@ import (
 // Implementations must not use user, namespace, pod, container, command, or
 // target path as metric labels. Those values belong in audit logs, not metrics.
 type Recorder interface {
+	AuditDelivery(result string)
 	AuthAttempt(credential, result string)
 	ConnectionOpened(method string)
 	ConnectionClosed(method string)
@@ -36,6 +37,7 @@ type HandlerProvider interface {
 // NopRecorder drops all observations.
 type NopRecorder struct{}
 
+func (NopRecorder) AuditDelivery(string)                                    {}
 func (NopRecorder) AuthAttempt(string, string)                              {}
 func (NopRecorder) ConnectionOpened(string)                                 {}
 func (NopRecorder) ConnectionClosed(string)                                 {}

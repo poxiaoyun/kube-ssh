@@ -27,7 +27,6 @@ func Build(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("build kubeconfig: %w", err)
 	}
-
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build kubernetes client: %w", err)

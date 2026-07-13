@@ -58,6 +58,15 @@ spec:
           spec:
             description: AccessSpec is the desired access surface.
             properties:
+              containers:
+                description: |-
+                  Containers limits the regular Pod containers exposed by this Access.
+                  Omitted or empty inherits the gateway default container policy. A
+                  credential may further narrow this list, but cannot expand it.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               credentials:
                 description: |-
                   Credentials are accepted authentication material for this access object.
@@ -104,15 +113,16 @@ spec:
                             LocalForward restricts direct-tcpip forwarding when set. If omitted,
                             local forwarding is not additionally restricted by this access object.
                           properties:
-                            allowPorts:
+                            allowDestinations:
                               description: |-
-                                AllowPorts are destination ports allowed for Pod-local forwarding. Empty
-                                means any Pod-local port is allowed.
+                                AllowDestinations are allowed host:port expressions. Examples:
+                                  - "127.0.0.1:8080"
+                                  - "*:8080"
+                                  - "*:*"
+
+                                Empty means any destination accepted by the backend is allowed.
                               items:
-                                format: int32
-                                maximum: 65535
-                                minimum: 1
-                                type: integer
+                                type: string
                               type: array
                               x-kubernetes-list-type: set
                           type: object
@@ -135,6 +145,14 @@ spec:
                               x-kubernetes-list-type: set
                           type: object
                       type: object
+                    containers:
+                      description: |-
+                        Containers limits this credential to named regular Pod containers. Omitted
+                        or empty inherits the Access container policy.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
                     extra:
                       additionalProperties:
                         items:
@@ -408,13 +426,6 @@ spec:
               session:
                 description: Session defines defaults used for shell and exec sessions.
                 properties:
-                  agentForwarding:
-                    description: |-
-                      AgentForwarding controls whether SSH agent forwarding may be requested for
-                      this Access. When omitted, kube-ssh uses the server-wide setting. Setting
-                      this field to true cannot enable agent forwarding when it is disabled
-                      server-wide; setting it to false disables agent forwarding for this Access.
-                    type: boolean
                   defaultShell:
                     description: |-
                       DefaultShell is used for shell sessions and as the shell for "sh -c" style

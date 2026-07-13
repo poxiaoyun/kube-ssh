@@ -38,9 +38,25 @@ func TestParseCapabilities(t *testing.T) {
 	}
 }
 
+func TestValidatePolicyOptions(t *testing.T) {
+	opts := NewDefaultOptions()
+	if err := validatePolicyOptions(opts); err != nil {
+		t.Fatalf("validatePolicyOptions() error = %v", err)
+	}
+	opts.Policy.Limits.ContainerMode = "invalid"
+	if err := validatePolicyOptions(opts); err == nil {
+		t.Fatal("validatePolicyOptions() error = nil for invalid container mode")
+	}
+	opts = NewDefaultOptions()
+	opts.Policy.Limits.RemoteForwardBinds = []string{"bad"}
+	if err := validatePolicyOptions(opts); err == nil {
+		t.Fatal("validatePolicyOptions() error = nil for invalid bind")
+	}
+}
+
 func TestBuildAuthorizerStaticPolicyOverridesAllowAll(t *testing.T) {
 	opts := NewDefaultOptions()
-	opts.Authorization.Deny = []string{"sftp"}
+	opts.Policy.Limits.Capabilities = []string{"exec"}
 
 	authorizer, err := buildAuthorizer(opts, nil, nil)
 	if err != nil {
@@ -57,7 +73,7 @@ func TestBuildAuthorizerStaticPolicyOverridesAllowAll(t *testing.T) {
 
 func TestBuildAuthorizerStaticPolicyAllowsConfiguredCapabilitiesWithoutSAR(t *testing.T) {
 	opts := NewDefaultOptions()
-	opts.Authorization.Allow = []string{"exec"}
+	opts.Policy.Limits.Capabilities = []string{"exec"}
 
 	authorizer, err := buildAuthorizer(opts, nil, nil)
 	if err != nil {

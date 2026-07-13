@@ -30,7 +30,7 @@ func TestAccessSessionMaxDurationClosesSSHConnection(t *testing.T) {
 	}
 	opts := NewDefaultOptions()
 	opts.ListenAddress = addr
-	opts.SSH.MaxDuration = time.Hour
+	opts.Policy.Defaults.MaxDuration = time.Hour
 	access := &sshv1.Access{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "nginx"},
 		Spec: sshv1.AccessSpec{
@@ -79,7 +79,6 @@ func TestSSHAgentForwardingRequestInjectsSocket(t *testing.T) {
 	}
 	opts := NewDefaultOptions()
 	opts.ListenAddress = addr
-	opts.SSH.AgentForwarding = true
 	agentForward := newBlockingAgentForward("/tmp/kube-ssh-agent/agent.sock")
 	captureBackend := &agentForwardExecBackend{agentForward: agentForward}
 
@@ -123,7 +122,7 @@ func TestSSHAgentForwardingRequestInjectsSocket(t *testing.T) {
 	}
 }
 
-func dialTestSSH(t *testing.T, addr string) *cryptossh.Client {
+func dialTestSSH(t testing.TB, addr string) *cryptossh.Client {
 	t.Helper()
 	config := &cryptossh.ClientConfig{
 		User:            "default.nginx",
@@ -145,7 +144,7 @@ func dialTestSSH(t *testing.T, addr string) *cryptossh.Client {
 	return nil
 }
 
-func freeTCPAddress(t *testing.T) string {
+func freeTCPAddress(t testing.TB) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -158,7 +157,7 @@ func freeTCPAddress(t *testing.T) string {
 	return addr
 }
 
-func stopTestServer(t *testing.T, cancel context.CancelFunc, errCh <-chan error) {
+func stopTestServer(t testing.TB, cancel context.CancelFunc, errCh <-chan error) {
 	t.Helper()
 	cancel()
 	select {

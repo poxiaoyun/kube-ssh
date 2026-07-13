@@ -13,17 +13,16 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/ioproxy"
 )
 
-func TestAcceptAgentForwardRequiresSessionPolicy(t *testing.T) {
+func TestAcceptAgentForwardRequiresAuthorization(t *testing.T) {
 	ctx, cancel := newRemoteForwardTestContext(&cryptossh.ServerConn{})
 	defer cancel()
-	WithSessionPolicy(ctx, effectiveSessionPolicy{AgentForwarding: false})
 
 	backend := &agentForwardBackend{forward: newBlockingAgentForward("/tmp/agent.sock")}
-	s := newRemoteForwardTestServer(authz.AllowAll{}, backend)
+	s := newRemoteForwardTestServer(authz.DenyAll{}, backend)
 
 	state, ok := s.acceptAgentForward(ctx, &cryptossh.ServerConn{})
 	if ok || state != nil {
-		t.Fatal("acceptAgentForward() allowed with disabled policy")
+		t.Fatal("acceptAgentForward() allowed after authz deny")
 	}
 	if backend.agentForwardCalls != 0 {
 		t.Fatalf("AgentForward calls = %d, want 0", backend.agentForwardCalls)
@@ -33,7 +32,6 @@ func TestAcceptAgentForwardRequiresSessionPolicy(t *testing.T) {
 func TestAcceptAgentForwardAuthorizationDenyDoesNotOpenBackend(t *testing.T) {
 	ctx, cancel := newRemoteForwardTestContext(&cryptossh.ServerConn{})
 	defer cancel()
-	WithSessionPolicy(ctx, effectiveSessionPolicy{AgentForwarding: true})
 
 	backend := &agentForwardBackend{forward: newBlockingAgentForward("/tmp/agent.sock")}
 	s := newRemoteForwardTestServer(authz.DenyAll{}, backend)
@@ -50,7 +48,6 @@ func TestAcceptAgentForwardAuthorizationDenyDoesNotOpenBackend(t *testing.T) {
 func TestAcceptAgentForwardStartsAndClosesBackend(t *testing.T) {
 	ctx, cancel := newRemoteForwardTestContext(&cryptossh.ServerConn{})
 	defer cancel()
-	WithSessionPolicy(ctx, effectiveSessionPolicy{AgentForwarding: true})
 
 	forward := newBlockingAgentForward("/tmp/kube-ssh-agent/agent.sock")
 	backend := &agentForwardBackend{forward: forward}
