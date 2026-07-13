@@ -16,6 +16,8 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/ioproxy"
 )
 
+var errRuntimeClientClosed = errors.New("helper runtime client closed")
+
 type RuntimeClient struct {
 	conn httpstream.Connection
 
@@ -154,7 +156,7 @@ func (c *RuntimeClient) call(ctx context.Context, requestType string, in any, ou
 	case <-c.closed:
 		got := <-result
 		if got.err != nil {
-			return fmt.Errorf("helper runtime client closed")
+			return errRuntimeClientClosed
 		}
 		return decodeResult(got)
 	}
@@ -165,7 +167,7 @@ func (c *RuntimeClient) openRuntimeStream(ctx context.Context) (httpstream.Strea
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-c.closed:
-		return nil, fmt.Errorf("helper runtime client closed")
+		return nil, errRuntimeClientClosed
 	default:
 	}
 
@@ -347,7 +349,7 @@ func (f *AgentForward) Accept(ctx context.Context) (ioproxy.HalfCloser, error) {
 		}
 		select {
 		case <-f.client.runtime.closed:
-			return nil, fmt.Errorf("helper runtime client closed")
+			return nil, errRuntimeClientClosed
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
@@ -359,6 +361,9 @@ func (f *AgentForward) Accept(ctx context.Context) (ioproxy.HalfCloser, error) {
 func (f *AgentForward) Cancel(ctx context.Context) error {
 	f.cancelOnce.Do(func() {
 		f.cancelErr = f.client.runtime.call(ctx, ControlTypeAgentForwardStop, nil, nil)
+		if errors.Is(f.cancelErr, errRuntimeClientClosed) {
+			f.cancelErr = nil
+		}
 		f.client.removeIfMatch(f)
 		f.closeLocal()
 	})
@@ -536,7 +541,7 @@ func (f *RemoteForward) Accept(ctx context.Context) (ioproxy.HalfCloser, RemoteF
 		}
 		select {
 		case <-f.client.runtime.closed:
-			return nil, RemoteForwardConnInfo{}, fmt.Errorf("helper runtime client closed")
+			return nil, RemoteForwardConnInfo{}, errRuntimeClientClosed
 		case <-ctx.Done():
 			return nil, RemoteForwardConnInfo{}, ctx.Err()
 		default:
@@ -548,6 +553,9 @@ func (f *RemoteForward) Accept(ctx context.Context) (ioproxy.HalfCloser, RemoteF
 func (f *RemoteForward) Cancel(ctx context.Context) error {
 	f.cancelOnce.Do(func() {
 		f.cancelErr = f.client.runtime.call(ctx, ControlTypeRemoteForwardStop, RemoteForwardStopRequest{Bind: f.actualBind}, nil)
+		if errors.Is(f.cancelErr, errRuntimeClientClosed) {
+			f.cancelErr = nil
+		}
 		f.client.removeForward(f)
 		f.closeLocal()
 	})
