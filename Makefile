@@ -66,7 +66,7 @@ release-helm: build-helm
 
 .PHONY: generate-install
 generate-install:
-	helm template kube-ssh $(CHART_DIR) --version=$(VERSION) --namespace kube-ssh --include-crds > deploy/install.yaml
+	helm template kube-ssh $(CHART_DIR) --version=$(VERSION) --namespace kube-ssh --include-crds --set kubeSsh.hostKey.autoGenerate=false > deploy/install.yaml
 
 .PHONY: release
 release: release-image release-helm

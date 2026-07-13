@@ -55,6 +55,8 @@ kubeSsh:
   hostKey:
     existingSecret: ""
     secretKey: ssh_host_key
+    # Generate and persist an Ed25519 key when no operator-managed key is configured.
+    autoGenerate: true
     # Optional inline private key for operator-managed deployments.
     # existingSecret takes precedence; leave both empty to generate and persist an Ed25519 key.
     privateKey: ""

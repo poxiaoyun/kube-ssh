@@ -34,4 +34,4 @@ Access 中的 `spec.gatewayClassName` 必须与网关类名完全一致。同一
 
 ## SSH 主机密钥
 
-Chart 会自动生成 Ed25519 主机密钥并保存到 Secret，Pod 重启和升级不会改变 SSH 指纹。如需复用统一管理的密钥，可设置 `kubeSsh.hostKey.existingSecret`；Secret 中必须包含 `kubeSsh.hostKey.secretKey` 指定的键。运维也可以通过 `kubeSsh.hostKey.privateKey` 直接传入私钥。优先级依次为 `existingSecret`、`privateKey`、自动生成。
+Chart 会自动生成 Ed25519 主机密钥并保存到 Secret，Pod 重启和升级不会改变 SSH 指纹。如需复用统一管理的密钥，可设置 `kubeSsh.hostKey.existingSecret`；Secret 中必须包含 `kubeSsh.hostKey.secretKey` 指定的键。运维也可以通过 `kubeSsh.hostKey.privateKey` 直接传入私钥。优先级依次为 `existingSecret`、`privateKey`、自动生成。设置 `kubeSsh.hostKey.autoGenerate=false` 可禁用主机密钥管理，由网关使用临时密钥。静态 `deploy/install.yaml` 会主动使用该配置，避免向所有用户分发同一私钥。
