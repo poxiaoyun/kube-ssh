@@ -772,12 +772,14 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: gateway
 spec:
-  type: ClusterIP
+  type: NodePort
+  externalTrafficPolicy: Cluster
   ports:
     - name: ssh
       port: 22
       targetPort: ssh
       protocol: TCP
+      nodePort: 30022
   selector:
     app.kubernetes.io/name: kube-ssh
     app.kubernetes.io/instance: kube-ssh

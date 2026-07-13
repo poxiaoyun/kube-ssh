@@ -30,7 +30,7 @@ Access 中的 `spec.gatewayClassName` 必须与网关类名完全一致。同一
 
 ## Service
 
-根据集群网络环境选择 `ClusterIP`、`NodePort` 或 `LoadBalancer`。`advertiseAddresses` 应填写用户实际访问的地址，而不是仅在集群内部可用的 Service 地址。
+Service 默认为 `NodePort`，端口为 `30022`。可根据集群网络环境选择 `ClusterIP`、`NodePort` 或 `LoadBalancer`。`advertiseAddresses` 应填写用户实际访问的地址，而不是仅在集群内部可用的 Service 地址。
 
 ## SSH 主机密钥
 

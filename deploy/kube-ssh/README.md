@@ -30,7 +30,7 @@ An Access `spec.gatewayClassName` must exactly match the gateway class. Gateway 
 
 ## Service
 
-Choose `ClusterIP`, `NodePort`, or `LoadBalancer` according to the cluster network. `advertiseAddresses` should contain addresses reachable by users, not an internal-only Service address.
+The default Service is `NodePort` on port `30022`. Choose `ClusterIP`, `NodePort`, or `LoadBalancer` according to the cluster network. `advertiseAddresses` should contain addresses reachable by users, not an internal-only Service address.
 
 ## SSH host key
 

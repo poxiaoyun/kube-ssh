@@ -35,11 +35,12 @@ kubeSsh:
     path: /metrics
 
   service:
-    type: ClusterIP
+    type: NodePort
     annotations: {}
     ports:
       ssh: 22
-    nodePorts: {}
+    nodePorts:
+      ssh: 30022
     externalTrafficPolicy: Cluster
     loadBalancerIP: ""
     loadBalancerSourceRanges: []

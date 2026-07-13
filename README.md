@@ -119,7 +119,8 @@ For a stable server identity, provide an Ed25519 host key through a Kubernetes
 Secret and set `kubeSsh.hostKey.existingSecret`. Without a configured host key,
 kube-ssh generates an ephemeral key when it starts.
 
-Expose SSH through a NodePort when needed:
+SSH is exposed through NodePort `30022` by default. Override the Service type
+or port when needed:
 
 ```bash
 helm install kube-ssh ./deploy/kube-ssh \
