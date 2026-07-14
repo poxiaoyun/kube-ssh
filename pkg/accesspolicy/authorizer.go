@@ -7,6 +7,7 @@ import (
 
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
+	"xiaoshiai.cn/kube-ssh/pkg/util/pattern"
 )
 
 type Authorizer struct {
@@ -29,9 +30,9 @@ func NewAuthorizer(store AccessGetter, defaults ...CapabilityDefaults) *Authoriz
 }
 
 func (a *Authorizer) Authorize(ctx context.Context, req authz.Request) (authz.Decision, string, error) {
-	namespace := firstExtra(req.AuthExtra, ExtraAccessNamespace)
-	name := firstExtra(req.AuthExtra, ExtraAccessName)
-	username := firstExtra(req.AuthExtra, ExtraCredentialUser)
+	namespace := GetExtra(req.AuthExtra, ExtraAccessNamespace)
+	name := GetExtra(req.AuthExtra, ExtraAccessName)
+	username := GetExtra(req.AuthExtra, ExtraCredentialUser)
 	if namespace == "" || name == "" || username == "" {
 		return authz.DecisionNoOpinion, "", nil
 	}
@@ -84,7 +85,7 @@ func capabilityAllowed(policy sshv1.CapabilityPolicy, defaults CapabilityDefault
 			allow = policy.LocalForward.AllowDestinations
 		}
 		if len(allow) > 0 {
-			destination := net.JoinHostPort(firstExtra(attrs.Extra, "destination_host"), firstExtra(attrs.Extra, "destination_port"))
+			destination := net.JoinHostPort(GetExtra(attrs.Extra, "destination_host"), GetExtra(attrs.Extra, "destination_port"))
 			if !bindAllowed(allow, destination) {
 				return false, "local forward destination not allowed"
 			}
@@ -95,7 +96,7 @@ func capabilityAllowed(policy sshv1.CapabilityPolicy, defaults CapabilityDefault
 			allow = policy.RemoteForward.AllowBinds
 		}
 		if len(allow) > 0 {
-			bind := net.JoinHostPort(firstExtra(attrs.Extra, "bind_host"), firstExtra(attrs.Extra, "bind_port"))
+			bind := net.JoinHostPort(GetExtra(attrs.Extra, "bind_host"), GetExtra(attrs.Extra, "bind_port"))
 			if !bindAllowed(allow, bind) {
 				return false, "remote forward bind not allowed"
 			}
@@ -114,25 +115,7 @@ func containsCapability(values []sshv1.Capability, capability sshv1.Capability) 
 }
 
 func bindAllowed(patterns []string, bind string) bool {
-	for _, pattern := range patterns {
-		if pattern == bind || pattern == "*" || pattern == "*:*" {
-			return true
-		}
-		patternHost, patternPort, err := net.SplitHostPort(pattern)
-		if err != nil {
-			continue
-		}
-		bindHost, bindPort, err := net.SplitHostPort(bind)
-		if err != nil {
-			continue
-		}
-		hostMatches := patternHost == "*" || patternHost == bindHost
-		portMatches := patternPort == "*" || patternPort == bindPort
-		if hostMatches && portMatches {
-			return true
-		}
-	}
-	return false
+	return pattern.MatchAny(patterns, bind)
 }
 
 func resourceName(resources []authz.AttributeResource, resource string) string {

@@ -8,6 +8,7 @@ import (
 
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
+	"xiaoshiai.cn/kube-ssh/pkg/util/pattern"
 )
 
 type accessSessionPolicyGetter interface {
@@ -155,12 +156,7 @@ func (s *Server) resolveSessionPolicy(ctx context.Context, sshUser string, infoE
 }
 
 func stringAllowed(patterns []string, value string) bool {
-	for _, pattern := range patterns {
-		if pattern == "*" || pattern == value {
-			return true
-		}
-	}
-	return false
+	return pattern.MatchAny(patterns, value)
 }
 
 func (s *Server) sessionPolicyAccess(ctx context.Context, sshUser string, infoExtra map[string][]string) (*sshv1.Access, error) {

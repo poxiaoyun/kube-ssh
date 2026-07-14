@@ -80,19 +80,22 @@ func (s *StrategySelector) SelectPod(access *sshv1.Access, pods []corev1.Pod, re
 	return s.trackPodLocked(key, access.Namespace, pod), true
 }
 
-func (s *StrategySelector) PreviewPod(access *sshv1.Access, pods []corev1.Pod) (corev1.Pod, bool) {
-	candidates := candidatePods(pods)
-	if len(candidates) == 0 {
-		return corev1.Pod{}, false
+// SelectPodByName selects an explicitly requested active Pod. Explicit
+// selections bypass strategy and session affinity, but are tracked so that
+// LeastConnections observes all active connections.
+func (s *StrategySelector) SelectPodByName(access *sshv1.Access, pods []corev1.Pod, name string) (podSelection, bool) {
+	for _, pod := range activePods(pods) {
+		if pod.Name != name {
+			continue
+		}
+		if s == nil {
+			s = NewStrategySelector()
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.trackPodLocked(accessKey(access.Namespace, access.Name), access.Namespace, pod), true
 	}
-	switch strategyType(access) {
-	case sshv1.AccessStrategyTypeNewest:
-		return newestPod(candidates), true
-	case sshv1.AccessStrategyTypeOldest:
-		return oldestPod(candidates), true
-	default:
-		return candidates[0], true
-	}
+	return podSelection{}, false
 }
 
 func (s *StrategySelector) affinityPodLocked(access *sshv1.Access, candidates []corev1.Pod, req target.ResolveRequest, now time.Time) (corev1.Pod, bool) {
@@ -166,13 +169,9 @@ func (s *StrategySelector) trackPodLocked(accessKeyValue, namespace string, pod 
 }
 
 func candidatePods(pods []corev1.Pod) []corev1.Pod {
-	active := make([]corev1.Pod, 0, len(pods))
+	active := activePods(pods)
 	ready := make([]corev1.Pod, 0, len(pods))
-	for _, pod := range pods {
-		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			continue
-		}
-		active = append(active, pod)
+	for _, pod := range active {
 		if podReady(pod) {
 			ready = append(ready, pod)
 		}
@@ -183,6 +182,18 @@ func candidatePods(pods []corev1.Pod) []corev1.Pod {
 	}
 	sortPods(candidates)
 	return candidates
+}
+
+func activePods(pods []corev1.Pod) []corev1.Pod {
+	active := make([]corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		active = append(active, pod)
+	}
+	sortPods(active)
+	return active
 }
 
 func podReady(pod corev1.Pod) bool {
@@ -305,7 +316,7 @@ func accessAffinityKey(access *sshv1.Access, req target.ResolveRequest) string {
 	case sshv1.AccessSessionAffinityTypeUser:
 		value = req.User.Name
 	case sshv1.AccessSessionAffinityTypeCredential:
-		value = firstExtra(req.AuthExtra, ExtraCredentialUser)
+		value = GetExtra(req.AuthExtra, ExtraCredentialUser)
 	case sshv1.AccessSessionAffinityTypeSourceIP:
 		value = req.SourceIP
 	case sshv1.AccessSessionAffinityTypeSSHUser, "":

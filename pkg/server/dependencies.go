@@ -76,9 +76,13 @@ func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error)
 	if err := validatePolicyOptions(opts); err != nil {
 		return Dependencies{}, err
 	}
-	kubeClient, restConfig, err := kube.Build(opts.Kubeconfig)
+	restConfig, err := kube.LoadConfig(opts.Kubeconfig)
 	if err != nil {
-		return Dependencies{}, fmt.Errorf("build kubernetes client: %w", err)
+		return Dependencies{}, fmt.Errorf("load kubernetes config: %w", err)
+	}
+	kubeClient, err := kube.NewClient(restConfig)
+	if err != nil {
+		return Dependencies{}, fmt.Errorf("create kubernetes client: %w", err)
 	}
 	metricsRecorder := buildMetrics(opts)
 	accessRuntime, err := buildAccessPolicyRuntime(opts, kubeClient, restConfig, metricsRecorder)
@@ -99,7 +103,11 @@ func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error)
 	}
 	directResolver := accessRuntime.directResolver
 	if directResolver == nil {
-		directResolver = kube.NewPolicyUsernameResolver(accesspolicy.NewKubernetesPodLister(kubeClient), opts.Policy.Defaults.ContainerMode, opts.Policy.Limits.ContainerMode)
+		directResolver = kube.NewUsernameResolver(kube.UsernameResolverOptions{
+			Pods:                 accesspolicy.NewKubernetesPodLister(kubeClient),
+			DefaultContainerMode: opts.Policy.Defaults.ContainerMode,
+			LimitContainerMode:   opts.Policy.Limits.ContainerMode,
+		})
 	}
 	auditRecorder := audit.NewAsyncRecorder(audit.NewStdoutSink(nil), opts.Audit.QueueSize, metricsRecorder.AuditDelivery)
 	return Dependencies{
@@ -318,8 +326,12 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 			DefaultMode: opts.Policy.Defaults.ContainerMode,
 			LimitMode:   opts.Policy.Limits.ContainerMode,
 		}), recorder),
-		directResolver: kube.NewPolicyUsernameResolver(podLister, opts.Policy.Defaults.ContainerMode, opts.Policy.Limits.ContainerMode),
-		accessPolicy:   policyCache,
+		directResolver: kube.NewUsernameResolver(kube.UsernameResolverOptions{
+			Pods:                 podLister,
+			DefaultContainerMode: opts.Policy.Defaults.ContainerMode,
+			LimitContainerMode:   opts.Policy.Limits.ContainerMode,
+		}),
+		accessPolicy: policyCache,
 	}, nil
 }
 
@@ -381,7 +393,7 @@ func buildResolver(accessResolver target.Resolver, directResolvers ...target.Res
 	if accessResolver != nil {
 		resolvers = append(resolvers, accessResolver)
 	}
-	directResolver := target.Resolver(kube.NewUsernameResolver())
+	directResolver := target.Resolver(kube.NewUsernameResolver(kube.UsernameResolverOptions{}))
 	if len(directResolvers) > 0 && directResolvers[0] != nil {
 		directResolver = directResolvers[0]
 	}
@@ -471,7 +483,7 @@ func buildMetrics(opts *Options) metrics.Recorder {
 }
 
 func buildBackend(opts *Options, kubeClient kubernetes.Interface, restConfig *rest.Config, recorder metrics.Recorder) (backend.Backend, error) {
-	kubeBackend := kube.NewBackend(kubeClient, restConfig, kube.Options{
+	kubeBackend := kube.NewBackend(kubeClient, restConfig, kube.BackendOptions{
 		HelperPath:      opts.Helper.Path,
 		HelperRemoteDir: opts.Helper.RemoteDir,
 		Metrics:         recorder,

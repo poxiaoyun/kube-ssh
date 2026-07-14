@@ -17,7 +17,7 @@ func TestInvalidUsernameIsRejected(t *testing.T) {
 	}
 }
 
-func TestMissingKubernetesTargetsFailClearly(t *testing.T) {
+func TestMissingKubernetesTargetsAreRejected(t *testing.T) {
 	f := NewFramework(t)
 
 	tests := []struct {
@@ -34,8 +34,12 @@ func TestMissingKubernetesTargetsFailClearly(t *testing.T) {
 			if result.Code == 0 {
 				t.Fatalf("missing target unexpectedly succeeded:\n%s", result.Dump())
 			}
-			if !strings.Contains(result.Stdout+result.Stderr, "BackendFailure") {
-				t.Fatalf("missing target error missing BackendFailure reason:\n%s", result.Dump())
+			output := result.Stdout + result.Stderr
+			if !strings.Contains(output, "Permission denied") {
+				t.Fatalf("missing target error missing authentication rejection:\n%s", result.Dump())
+			}
+			if strings.Contains(output, "InvalidTarget") || strings.Contains(output, "BackendFailure") {
+				t.Fatalf("missing target error leaked an internal failure reason:\n%s", result.Dump())
 			}
 		})
 	}

@@ -16,7 +16,6 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=acc
-// +kubebuilder:printcolumn:name="SelectedBackend",type=string,JSONPath=".status.selectedBackend"
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=".status.conditions[?(@.type=='Valid')].status"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 type Access struct {
@@ -74,7 +73,8 @@ type AccessSpec struct {
 
 	// Containers limits the regular Pod containers exposed by this Access.
 	// Omitted or empty inherits the gateway default container policy. A
-	// credential may further narrow this list, but cannot expand it.
+	// credential may further narrow this list, but cannot expand it. Entries are
+	// exact names or patterns in which "*" matches any sequence of characters.
 	//
 	// +listType=set
 	Containers []string `json:"containers,omitempty"`
@@ -279,7 +279,8 @@ type AccessCredential struct {
 	Credential `json:",inline"`
 
 	// Containers limits this credential to named regular Pod containers. Omitted
-	// or empty inherits the Access container policy.
+	// or empty inherits the Access container policy. Entries are exact names or
+	// patterns in which "*" matches any sequence of characters.
 	//
 	// +listType=set
 	Containers []string `json:"containers,omitempty"`
@@ -383,6 +384,8 @@ type LocalForwardPolicy struct {
 	//   - "*:8080"
 	//   - "*:*"
 	//
+	// An asterisk matches any sequence of characters; "*" allows every value.
+	//
 	// Empty means any destination accepted by the backend is allowed.
 	//
 	// +listType=set
@@ -396,6 +399,8 @@ type RemoteForwardPolicy struct {
 	//   - "127.0.0.1:*"
 	//   - "*:10022"
 	//
+	// An asterisk matches any sequence of characters; "*" allows every value.
+	//
 	// Empty means any bind accepted by the backend is allowed.
 	//
 	// +listType=set
@@ -407,12 +412,6 @@ type AccessStatus struct {
 	// ObservedGeneration is the latest metadata.generation processed by a
 	// controller or informer-backed validator.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// SelectedBackend is a compact human-readable summary of one currently
-	// selectable backend. It is intentionally deterministic for status display
-	// and may differ from the backend picked by Random or RoundRobin at
-	// connection time.
-	SelectedBackend string `json:"selectedBackend,omitempty"`
 
 	// Endpoints are gateway-advertised SSH connection targets for this Access.
 	// Address values use host:port form and Username contains the Access locator.
@@ -440,8 +439,8 @@ const (
 	// credential material are usable by kube-ssh.
 	AccessConditionValid = "Valid"
 
-	// AccessConditionReady reports whether the selected backend currently has
-	// at least one usable target.
+	// AccessConditionReady reports whether the Access currently has at least one
+	// usable backend target.
 	AccessConditionReady = "Ready"
 )
 

@@ -12,7 +12,7 @@ import (
 )
 
 func TestUsernameResolverResolve(t *testing.T) {
-	resolver := NewUsernameResolver()
+	resolver := NewUsernameResolver(UsernameResolverOptions{})
 
 	tgt, err := resolver.Resolve(context.Background(), target.ResolveRequest{SSHUser: "default.nginx"})
 	if err != nil {
@@ -54,7 +54,11 @@ func TestPolicyUsernameResolverUsesKubernetesDefaultContainer(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "nginx", Annotations: map[string]string{"kubectl.kubernetes.io/default-container": "sidecar"}},
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}, {Name: "sidecar"}}},
 	}}
-	resolver := NewPolicyUsernameResolver(pods, "KubernetesDefault", "All")
+	resolver := NewUsernameResolver(UsernameResolverOptions{
+		Pods:                 pods,
+		DefaultContainerMode: "KubernetesDefault",
+		LimitContainerMode:   "All",
+	})
 	tgt, err := resolver.Resolve(context.Background(), target.ResolveRequest{SSHUser: "default.nginx"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)

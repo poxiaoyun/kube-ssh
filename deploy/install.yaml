@@ -19,9 +19,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.selectedBackend
-      name: SelectedBackend
-      type: string
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
@@ -64,7 +61,8 @@ spec:
                 description: |-
                   Containers limits the regular Pod containers exposed by this Access.
                   Omitted or empty inherits the gateway default container policy. A
-                  credential may further narrow this list, but cannot expand it.
+                  credential may further narrow this list, but cannot expand it. Entries are
+                  exact names or patterns in which "*" matches any sequence of characters.
                 items:
                   type: string
                 type: array
@@ -122,6 +120,8 @@ spec:
                                   - "*:8080"
                                   - "*:*"
 
+                                An asterisk matches any sequence of characters; "*" allows every value.
+
                                 Empty means any destination accepted by the backend is allowed.
                               items:
                                 type: string
@@ -140,6 +140,8 @@ spec:
                                   - "127.0.0.1:*"
                                   - "*:10022"
 
+                                An asterisk matches any sequence of characters; "*" allows every value.
+
                                 Empty means any bind accepted by the backend is allowed.
                               items:
                                 type: string
@@ -150,7 +152,8 @@ spec:
                     containers:
                       description: |-
                         Containers limits this credential to named regular Pod containers. Omitted
-                        or empty inherits the Access container policy.
+                        or empty inherits the Access container policy. Entries are exact names or
+                        patterns in which "*" matches any sequence of characters.
                       items:
                         type: string
                       type: array
@@ -647,13 +650,6 @@ spec:
                   controller or informer-backed validator.
                 format: int64
                 type: integer
-              selectedBackend:
-                description: |-
-                  SelectedBackend is a compact human-readable summary of one currently
-                  selectable backend. It is intentionally deterministic for status display
-                  and may differ from the backend picked by Random or RoundRobin at
-                  connection time.
-                type: string
             type: object
         type: object
     served: true

@@ -27,7 +27,6 @@ type AccessStatusController struct {
 	pods          PodLister
 	secretIndexer cache.Indexer
 	updateStatus  AccessStatusUpdater
-	selector      *StrategySelector
 	policy        ContainerPolicy
 	endpoints     []sshv1.AccessStatusEndpoint
 	queue         workqueue.TypedRateLimitingInterface[string]
@@ -44,7 +43,6 @@ func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cac
 		pods:          pods,
 		secretIndexer: secretIndexer,
 		updateStatus:  updateStatus,
-		selector:      NewStrategySelector(),
 		policy:        options.Policy,
 		endpoints:     append([]sshv1.AccessStatusEndpoint(nil), options.Endpoints...),
 		queue:         workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
@@ -153,7 +151,6 @@ func (c *AccessStatusController) sync(ctx context.Context, key string) error {
 	}
 	status := c.statusFor(ctx, access)
 	if access.Status.ObservedGeneration == status.ObservedGeneration &&
-		access.Status.SelectedBackend == status.SelectedBackend &&
 		equality.Semantic.DeepEqual(access.Status.Endpoints, status.Endpoints) &&
 		equality.Semantic.DeepEqual(access.Status.Conditions, status.Conditions) {
 		return nil
@@ -219,8 +216,7 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 			selectablePods = append(selectablePods, pod)
 		}
 	}
-	pod, ok := c.selector.PreviewPod(access, selectablePods)
-	if !ok {
+	if len(candidatePods(selectablePods)) == 0 {
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               sshv1.AccessConditionReady,
 			Status:             metav1.ConditionFalse,
@@ -230,16 +226,6 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		})
 		return status
 	}
-	container := c.statusContainer(pod, access)
-	if container == "" {
-		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
-			Type: sshv1.AccessConditionReady, Status: metav1.ConditionFalse,
-			ObservedGeneration: access.Generation, Reason: "NoContainers",
-			Message: "Selected Pod has no container exposed by this Access.",
-		})
-		return status
-	}
-	status.SelectedBackend = "pod/" + access.Namespace + "/" + pod.Name + "/" + container
 	apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 		Type:               sshv1.AccessConditionReady,
 		Status:             metav1.ConditionTrue,

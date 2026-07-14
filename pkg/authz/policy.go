@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"slices"
+
+	"xiaoshiai.cn/kube-ssh/pkg/util/pattern"
 )
 
 // PolicyLimits is a non-bypassable guard around configured authorizers. A
@@ -45,18 +47,5 @@ func containsOrWildcard(values []Capability, value Capability) bool {
 }
 
 func expressionAllowed(patterns []string, value string) bool {
-	for _, pattern := range patterns {
-		if pattern == "*" || pattern == "*:*" || pattern == value {
-			return true
-		}
-		patternHost, patternPort, err := net.SplitHostPort(pattern)
-		if err != nil {
-			continue
-		}
-		valueHost, valuePort, err := net.SplitHostPort(value)
-		if err == nil && (patternHost == "*" || patternHost == valueHost) && (patternPort == "*" || patternPort == valuePort) {
-			return true
-		}
-	}
-	return false
+	return pattern.MatchAny(patterns, value)
 }

@@ -222,6 +222,54 @@ The Access username formats are:
 - `namespace.access`
 - `namespace.access.container`
 
+An Access that selects multiple Pods can also target one Pod explicitly:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 'default.notebook~notebook-0'@<kube-ssh-host>
+ssh -i ~/.ssh/id_ed25519 'default.notebook~notebook-1.app'@<kube-ssh-host>
+```
+
+The explicit Pod username formats are:
+
+- `namespace.access~pod`
+- `namespace.access~pod.container`
+
+The requested Pod must be active and belong to the Pods matched by the Access
+selector. Explicit selection accepts a matched Pod that is not Ready, but
+rejects deleting, succeeded, and failed Pods. It bypasses the Access selection
+strategy and session affinity for that connection; the connection still counts
+toward `LeastConnections` load.
+
+This is particularly useful for StatefulSets. One Access can select the entire
+StatefulSet and expose each stable Pod identity without one Access per ordinal:
+
+```yaml
+apiVersion: ssh.xiaoshiai.cn/v1
+kind: Access
+metadata:
+  name: mysql
+  namespace: database
+spec:
+  selector:
+    app: mysql
+  containers:
+    - mysql
+  credentials:
+    - username: alice
+      publicKeys:
+        - ssh-ed25519 AAAA... alice
+```
+
+```bash
+ssh 'database.mysql~mysql-0'@<kube-ssh-host>
+ssh 'database.mysql~mysql-1'@<kube-ssh-host>
+ssh 'database.mysql~mysql-2.mysql'@<kube-ssh-host>
+```
+
+No Service or StatefulSet API lookup is involved; membership is enforced only
+through `spec.selector`. If the locator after `~` exactly matches a Pod name,
+that exact name wins. Otherwise, the final `.` separates the Pod and container.
+
 Gateways may be partitioned by class. A gateway configured with
 `--gateway-class-name=default-gateway` only handles Access objects whose
 `spec.gatewayClassName` is `default-gateway`; a classless gateway only handles classless
@@ -230,7 +278,8 @@ Access objects. Publish one or more externally reachable addresses with
 entries under `status.endpoints`.
 
 Each status endpoint contains the advertised `address` and the Access target
-`username`, so clients do not need to reconstruct kube-ssh locator rules.
+base `username`. Append `~pod` or `~pod.container` when an explicit Pod is
+needed.
 
 > User identity is derived from the matching public key or password token, not
 > from the SSH username. Credential values are expected to be unique. For a
@@ -274,7 +323,8 @@ credentials:
 ```
 
 `spec.containers` controls which regular Pod containers the Access exposes;
-`credentials[].containers` can narrow that set for one identity.
+`credentials[].containers` can narrow that set for one identity. These lists
+accept exact names and `*` patterns, such as `app-*`.
 
 An empty capability policy inherits the gateway defaults. Set
 `capabilities.allow` to switch that credential into whitelist mode:
@@ -299,6 +349,10 @@ capabilities:
     allowDestinations:
       - "*:8080"
 ```
+
+String policy patterns use `*` as a wildcard matching any sequence of
+characters. For example, forwarding rules can use `db-*:5432`, `*:8080`, or
+`*` for every destination.
 
 Current runtime support is focused on Pod-backed `Access` objects. The API has
 reserved fields for external endpoints, but external SSH backend support is not

@@ -4,8 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,58 +20,67 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
-func TestValidateHelperHealth(t *testing.T) {
-	valid := helperpkg.Health{
-		Protocol:     helperpkg.ProtocolVersion,
-		Capabilities: []string{helperpkg.CapabilityHealth, helperpkg.CapabilitySFTP},
+func TestValidateHelperManifest(t *testing.T) {
+	expected := validHelperManifest()
+	valid := expected
+	if err := validateHelperManifest(valid, expected, helperpkg.CapabilitySFTP); err != nil {
+		t.Fatalf("validateHelperManifest() error = %v", err)
 	}
-	if err := ValidateHelperHealth(valid, helperpkg.CapabilitySFTP); err != nil {
-		t.Fatalf("validateHelperHealth() error = %v", err)
+
+	wrongVersion := valid
+	wrongVersion.Version = "old"
+	if err := validateHelperManifest(wrongVersion, expected, helperpkg.CapabilitySFTP); err == nil {
+		t.Fatal("validateHelperManifest() succeeded for wrong version")
+	}
+
+	wrongCommit := valid
+	wrongCommit.Commit = "other"
+	if err := validateHelperManifest(wrongCommit, expected, helperpkg.CapabilitySFTP); err == nil {
+		t.Fatal("validateHelperManifest() succeeded for wrong commit")
 	}
 
 	wrongProtocol := valid
-	wrongProtocol.Protocol = "old"
-	if err := ValidateHelperHealth(wrongProtocol, helperpkg.CapabilitySFTP); err == nil {
-		t.Fatal("validateHelperHealth() succeeded for wrong protocol")
+	wrongProtocol.ProtocolVersion = "old"
+	if err := validateHelperManifest(wrongProtocol, expected, helperpkg.CapabilitySFTP); err == nil {
+		t.Fatal("validateHelperManifest() succeeded for wrong protocol")
 	}
 
-	missingHealth := valid
-	missingHealth.Capabilities = []string{helperpkg.CapabilitySFTP}
-	if err := ValidateHelperHealth(missingHealth, helperpkg.CapabilitySFTP); err == nil {
-		t.Fatal("validateHelperHealth() succeeded without health capability")
+	differentMetadata := valid
+	differentMetadata.BuildDate = "another build"
+	differentMetadata.OS = "another-os"
+	differentMetadata.Arch = "another-arch"
+	if err := validateHelperManifest(differentMetadata, expected, helperpkg.CapabilitySFTP); err != nil {
+		t.Fatalf("validateHelperManifest() rejected diagnostic metadata: %v", err)
 	}
 
 	missingRequired := valid
-	if err := ValidateHelperHealth(missingRequired, helperpkg.CapabilitySCP); err == nil {
-		t.Fatal("validateHelperHealth() succeeded without required capability")
+	missingRequired.Capabilities = []string{helperpkg.CapabilitySFTP}
+	if err := validateHelperManifest(missingRequired, expected, helperpkg.CapabilitySCP); err == nil {
+		t.Fatal("validateHelperManifest() succeeded without required capability")
 	}
 }
 
 func TestDefaultHelperCapabilitiesAdvertiseProtocolCommands(t *testing.T) {
-	health := helperpkg.Health{
-		Protocol:     helperpkg.ProtocolVersion,
-		Capabilities: helperpkg.DefaultCapabilities(),
-	}
+	manifest := validHelperManifest()
 
 	for _, capability := range []string{
-		helperpkg.CapabilityHealth,
-		helperpkg.CapabilityChecksum,
 		helperpkg.CapabilityDial,
 		helperpkg.CapabilityRemoteForward,
+		helperpkg.CapabilityAgentForward,
 		helperpkg.CapabilitySFTP,
 		helperpkg.CapabilitySCP,
 	} {
-		if err := ValidateHelperHealth(health, capability); err != nil {
-			t.Fatalf("validateHelperHealth(%q) error = %v", capability, err)
+		if err := validateHelperManifest(manifest, manifest, capability); err != nil {
+			t.Fatalf("validateHelperManifest(%q) error = %v", capability, err)
 		}
 	}
 }
 
 func TestAcquireHelperRecordsActiveUntilFirstRelease(t *testing.T) {
 	recorder := &helperMetricsRecorder{}
-	handle := &recordingHelperHandle{}
+	handle := &recordinghelperLease{}
 	b := &Backend{
-		helperProvider: staticHelperProvider{handle: handle},
+		helperAcquirer: statichelperAcquirer{handle: handle},
 		metrics:        recorder,
 	}
 
@@ -98,18 +105,16 @@ func TestAcquireHelperRecordsActiveUntilFirstRelease(t *testing.T) {
 	}
 }
 
-func TestAcquireHelperCopiesVerifiesHealthAndCaches(t *testing.T) {
+func TestAcquireHelperCopiesProbesVersionAndCaches(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	tgt := NewTarget("default", "nginx", "app")
 
 	script := newHelperExecScript(t,
 		helperShellCopySuccess,
-		helperChecksum(expectedChecksum),
-		helperHealth(validHelperHealth()),
+		helperVersion(validHelperManifest()),
 	)
 	b := script.backend()
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	handle, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP)
 	if err != nil {
@@ -125,6 +130,9 @@ func TestAcquireHelperCopiesVerifiesHealthAndCaches(t *testing.T) {
 	if err := handle.Release(context.Background()); err != nil {
 		t.Fatalf("Release() error = %v", err)
 	}
+	if err := os.Remove(helperPath); err != nil {
+		t.Fatalf("Remove(helper) error = %v", err)
+	}
 
 	second, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySCP)
 	if err != nil {
@@ -134,11 +142,37 @@ func TestAcquireHelperCopiesVerifiesHealthAndCaches(t *testing.T) {
 		t.Fatalf("second helper command = %#v", got)
 	}
 
-	if len(script.commands) != 3 {
-		t.Fatalf("exec command count = %d, want 3", len(script.commands))
+	if len(script.commands) != 2 {
+		t.Fatalf("exec command count = %d, want 2", len(script.commands))
 	}
 	if script.commands[0][0] != "sh" || script.commands[0][4] == "" {
 		t.Fatalf("copy command = %#v", script.commands[0])
+	}
+}
+
+func TestHelperCacheKeyUsesVersionIdentity(t *testing.T) {
+	tgt := NewTarget("default", "nginx", "app")
+	manifest := validHelperManifest()
+	key := helperCacheKey(tgt, manifest)
+
+	metadata := manifest
+	metadata.BuildDate = "another build"
+	metadata.OS = "another-os"
+	metadata.Arch = "another-arch"
+	if got := helperCacheKey(tgt, metadata); got != key {
+		t.Fatalf("diagnostic metadata changed cache key: %q != %q", got, key)
+	}
+
+	otherVersion := manifest
+	otherVersion.Version = "another-version"
+	if got := helperCacheKey(tgt, otherVersion); got == key {
+		t.Fatal("version did not change cache key")
+	}
+
+	otherCommit := manifest
+	otherCommit.Commit = "another-commit"
+	if got := helperCacheKey(tgt, otherCommit); got == key {
+		t.Fatal("commit did not change cache key")
 	}
 }
 
@@ -156,40 +190,38 @@ func (r *helperMetricsRecorder) HelperReleased(string, string, time.Duration) {
 	r.released++
 }
 
-type staticHelperProvider struct {
-	handle HelperHandle
+type statichelperAcquirer struct {
+	handle helperLease
 }
 
-func (p staticHelperProvider) Acquire(context.Context, *target.Target, string) (HelperHandle, error) {
+func (p statichelperAcquirer) Acquire(context.Context, *target.Target, string) (helperLease, error) {
 	return p.handle, nil
 }
 
-type recordingHelperHandle struct {
+type recordinghelperLease struct {
 	releaseCount int
 }
 
-func (h *recordingHelperHandle) Command(args ...string) []string {
+func (h *recordinghelperLease) Command(args ...string) []string {
 	return append([]string{"helper"}, args...)
 }
 
-func (h *recordingHelperHandle) Release(context.Context) error {
+func (h *recordinghelperLease) Release(context.Context) error {
 	h.releaseCount++
 	return nil
 }
 
 func TestAcquireHelperFallsBackToTarCopy(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	tgt := NewTarget("default", "nginx", "app")
 
 	script := newHelperExecScript(t,
 		helperShellCopyExit(127),
 		helperTarCopySuccess("/work"),
-		helperChecksum(expectedChecksum),
-		helperHealth(validHelperHealth()),
+		helperVersion(validHelperManifest()),
 	)
 	b := script.backend()
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	handle, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP)
 	if err != nil {
@@ -212,7 +244,7 @@ func TestAcquireHelperReportsAllCopyMethodFailures(t *testing.T) {
 			return 127, nil
 		},
 	}
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	_, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP)
 	if err == nil {
@@ -229,68 +261,65 @@ func TestAcquireHelperReportsAllCopyMethodFailures(t *testing.T) {
 	}
 }
 
-func TestAcquireHelperChecksumMismatchDoesNotCache(t *testing.T) {
+func TestAcquireHelperVersionMismatchDoesNotCache(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	tgt := NewTarget("default", "nginx", "app")
+	wrong := validHelperManifest()
+	wrong.Commit = "wrong"
 
 	script := newHelperExecScript(t,
 		helperShellCopySuccess,
-		helperChecksum("wrong"),
+		helperVersion(wrong),
 		helperShellCopySuccess,
-		helperChecksum(expectedChecksum),
-		helperHealth(validHelperHealth()),
+		helperVersion(validHelperManifest()),
 	)
 	b := script.backend()
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err == nil {
-		t.Fatal("acquireHelper() succeeded with checksum mismatch")
+		t.Fatal("acquireHelper() succeeded with version mismatch")
 	}
 	if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err != nil {
 		t.Fatalf("retry acquireHelper() error = %v", err)
 	}
-	if len(script.commands) != 5 {
-		t.Fatalf("exec command count = %d, want 5", len(script.commands))
+	if len(script.commands) != 4 {
+		t.Fatalf("exec command count = %d, want 4", len(script.commands))
 	}
 }
 
-func TestAcquireHelperHealthFailureDoesNotCache(t *testing.T) {
+func TestAcquireHelperProtocolFailureDoesNotCache(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	tgt := NewTarget("default", "nginx", "app")
+	invalid := validHelperManifest()
+	invalid.ProtocolVersion = "old"
 
 	script := newHelperExecScript(t,
 		helperShellCopySuccess,
-		helperChecksum(expectedChecksum),
-		helperHealth(helperpkg.Health{Protocol: "old", Capabilities: []string{helperpkg.CapabilityHealth}}),
+		helperVersion(invalid),
 		helperShellCopySuccess,
-		helperChecksum(expectedChecksum),
-		helperHealth(validHelperHealth()),
+		helperVersion(validHelperManifest()),
 	)
 	b := script.backend()
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err == nil {
-		t.Fatal("acquireHelper() succeeded with invalid health")
+		t.Fatal("acquireHelper() succeeded with invalid protocol")
 	}
 	if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err != nil {
 		t.Fatalf("retry acquireHelper() error = %v", err)
 	}
-	if len(script.commands) != 6 {
-		t.Fatalf("exec command count = %d, want 6", len(script.commands))
+	if len(script.commands) != 4 {
+		t.Fatalf("exec command count = %d, want 4", len(script.commands))
 	}
 }
 
 func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	tgt := NewTarget("default", "nginx", "app")
 
 	var mu sync.Mutex
 	var copyCount int
-	var checksumCount int
-	var healthCount int
+	var versionCount int
 	var helperPathRemote string
 	copyStarted := make(chan struct{})
 	releaseCopy := make(chan struct{})
@@ -299,19 +328,11 @@ func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 	b := &Backend{
 		execOverride: func(_ context.Context, req backend.ExecRequest) (int, error) {
 			switch req.Command[len(req.Command)-1] {
-			case helperpkg.CapabilityChecksum:
+			case helperpkg.CommandVersion:
 				mu.Lock()
-				checksumCount++
+				versionCount++
 				mu.Unlock()
-				_, _ = req.Stdout.Write([]byte(expectedChecksum + "\n"))
-			case helperpkg.CapabilityHealth:
-				mu.Lock()
-				healthCount++
-				mu.Unlock()
-				_ = json.NewEncoder(req.Stdout).Encode(helperpkg.Health{
-					Protocol:     helperpkg.ProtocolVersion,
-					Capabilities: helperpkg.DefaultCapabilities(),
-				})
+				_ = json.NewEncoder(req.Stdout).Encode(validHelperManifest())
 			default:
 				mu.Lock()
 				copyCount++
@@ -323,7 +344,7 @@ func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 			return 0, nil
 		},
 	}
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -361,8 +382,7 @@ func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 	mu.Lock()
 	wantPath := helperPathRemote
 	gotCopyCount := copyCount
-	gotChecksumCount := checksumCount
-	gotHealthCount := healthCount
+	gotVersionCount := versionCount
 	mu.Unlock()
 	for gotPath := range paths {
 		if gotPath != wantPath {
@@ -372,17 +392,13 @@ func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 	if gotCopyCount != 1 {
 		t.Fatalf("copy count = %d, want 1", gotCopyCount)
 	}
-	if gotChecksumCount != 1 {
-		t.Fatalf("checksum count = %d, want 1", gotChecksumCount)
-	}
-	if gotHealthCount != 1 {
-		t.Fatalf("health count = %d, want 1", gotHealthCount)
+	if gotVersionCount != 1 {
+		t.Fatalf("version count = %d, want 1", gotVersionCount)
 	}
 }
 
-func TestCopyHelperProviderInvalidateTarget(t *testing.T) {
+func TestCopyHelperAcquirerInvalidateTarget(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	tgt := NewTarget("default", "nginx", "app")
 
 	var commands [][]string
@@ -391,13 +407,8 @@ func TestCopyHelperProviderInvalidateTarget(t *testing.T) {
 		execOverride: func(_ context.Context, req backend.ExecRequest) (int, error) {
 			commands = append(commands, append([]string(nil), req.Command...))
 			switch req.Command[len(req.Command)-1] {
-			case helperpkg.CapabilityChecksum:
-				_, _ = req.Stdout.Write([]byte(expectedChecksum + "\n"))
-			case helperpkg.CapabilityHealth:
-				_ = json.NewEncoder(req.Stdout).Encode(helperpkg.Health{
-					Protocol:     helperpkg.ProtocolVersion,
-					Capabilities: helperpkg.DefaultCapabilities(),
-				})
+			case helperpkg.CommandVersion:
+				_ = json.NewEncoder(req.Stdout).Encode(validHelperManifest())
 			default:
 				if helperPathRemote == "" {
 					helperPathRemote = req.Command[4]
@@ -409,8 +420,8 @@ func TestCopyHelperProviderInvalidateTarget(t *testing.T) {
 			return 0, nil
 		},
 	}
-	provider := NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
-	b.helperProvider = provider
+	provider := newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = provider
 
 	if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err != nil {
 		t.Fatalf("acquireHelper() error = %v", err)
@@ -419,14 +430,13 @@ func TestCopyHelperProviderInvalidateTarget(t *testing.T) {
 	if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err != nil {
 		t.Fatalf("acquireHelper() after invalidate error = %v", err)
 	}
-	if len(commands) != 6 {
-		t.Fatalf("exec command count = %d, want 6", len(commands))
+	if len(commands) != 4 {
+		t.Fatalf("exec command count = %d, want 4", len(commands))
 	}
 }
 
 func TestAcquireHelperDifferentTargetsCopySeparately(t *testing.T) {
 	helperPath := writeTempHelper(t, "helper-binary")
-	expectedChecksum := sha256Hex([]byte("helper-binary"))
 	targets := []*target.Target{
 		NewTarget("default", "nginx-a", "app"),
 		NewTarget("default", "nginx-b", "app"),
@@ -437,13 +447,8 @@ func TestAcquireHelperDifferentTargetsCopySeparately(t *testing.T) {
 	b := &Backend{
 		execOverride: func(_ context.Context, req backend.ExecRequest) (int, error) {
 			switch req.Command[len(req.Command)-1] {
-			case helperpkg.CapabilityChecksum:
-				_, _ = req.Stdout.Write([]byte(expectedChecksum + "\n"))
-			case helperpkg.CapabilityHealth:
-				_ = json.NewEncoder(req.Stdout).Encode(helperpkg.Health{
-					Protocol:     helperpkg.ProtocolVersion,
-					Capabilities: helperpkg.DefaultCapabilities(),
-				})
+			case helperpkg.CommandVersion:
+				_ = json.NewEncoder(req.Stdout).Encode(validHelperManifest())
 			default:
 				copyCount++
 				paths[req.Command[4]] = struct{}{}
@@ -451,7 +456,7 @@ func TestAcquireHelperDifferentTargetsCopySeparately(t *testing.T) {
 			return 0, nil
 		},
 	}
-	b.helperProvider = NewCopyHelperProvider(b, CopyHelperProviderOptions{LocalPath: helperPath, RemoteDir: "/work"})
+	b.helperAcquirer = newCopyHelperAcquirer(b, copyHelperAcquirerOptions{LocalPath: helperPath, RemoteDir: "/work"})
 
 	for _, tgt := range targets {
 		if _, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP); err != nil {
@@ -550,35 +555,20 @@ func helperTarCopySuccess(remoteDir string) helperExecStep {
 	}
 }
 
-func helperChecksum(checksum string) helperExecStep {
+func helperVersion(manifest helperpkg.Manifest) helperExecStep {
 	return func(s *helperExecScript, req backend.ExecRequest) (int, error) {
 		s.t.Helper()
-		want := []string{s.remotePath, helperpkg.CapabilityChecksum}
+		want := []string{s.remotePath, helperpkg.CommandVersion}
 		if !equalStrings(req.Command, want) {
-			s.t.Fatalf("checksum command = %#v, want %#v", req.Command, want)
+			s.t.Fatalf("version command = %#v, want %#v", req.Command, want)
 		}
-		_, _ = req.Stdout.Write([]byte(checksum + "\n"))
+		_ = json.NewEncoder(req.Stdout).Encode(manifest)
 		return 0, nil
 	}
 }
 
-func helperHealth(health helperpkg.Health) helperExecStep {
-	return func(s *helperExecScript, req backend.ExecRequest) (int, error) {
-		s.t.Helper()
-		want := []string{s.remotePath, helperpkg.CapabilityHealth}
-		if !equalStrings(req.Command, want) {
-			s.t.Fatalf("health command = %#v, want %#v", req.Command, want)
-		}
-		_ = json.NewEncoder(req.Stdout).Encode(health)
-		return 0, nil
-	}
-}
-
-func validHelperHealth() helperpkg.Health {
-	return helperpkg.Health{
-		Protocol:     helperpkg.ProtocolVersion,
-		Capabilities: helperpkg.DefaultCapabilities(),
-	}
+func validHelperManifest() helperpkg.Manifest {
+	return helperpkg.CurrentManifest()
 }
 
 func equalStrings(a, b []string) bool {
@@ -600,11 +590,6 @@ func writeTempHelper(t *testing.T, data string) string {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	return path
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func assertSingleHelperTar(t *testing.T, data []byte, name, content string) {

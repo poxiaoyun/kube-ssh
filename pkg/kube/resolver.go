@@ -21,10 +21,18 @@ type UsernameResolver struct {
 	limitMode   string
 }
 
-func NewUsernameResolver() *UsernameResolver { return &UsernameResolver{} }
+type UsernameResolverOptions struct {
+	Pods                 PodGetter
+	DefaultContainerMode string
+	LimitContainerMode   string
+}
 
-func NewPolicyUsernameResolver(pods PodGetter, defaultMode, limitMode string) *UsernameResolver {
-	return &UsernameResolver{pods: pods, defaultMode: defaultMode, limitMode: limitMode}
+func NewUsernameResolver(options UsernameResolverOptions) *UsernameResolver {
+	return &UsernameResolver{
+		pods:        options.Pods,
+		defaultMode: options.DefaultContainerMode,
+		limitMode:   options.LimitContainerMode,
+	}
 }
 
 // Resolve parses the SSH username as a kube target locator.

@@ -33,7 +33,7 @@ func TestAuthenticatorMatchesPasswordToken(t *testing.T) {
 	if info.User.Name != "alice" || info.Method != "crd-password" {
 		t.Fatalf("info = %#v", info)
 	}
-	if firstExtra(info.Extra, ExtraAccessNamespace) != "default" || firstExtra(info.Extra, ExtraAccessName) != "notebook" {
+	if GetExtra(info.Extra, ExtraAccessNamespace) != "default" || GetExtra(info.Extra, ExtraAccessName) != "notebook" {
 		t.Fatalf("extra = %#v", info.Extra)
 	}
 }
@@ -245,6 +245,129 @@ func TestResolverResolvesAccessToPodTarget(t *testing.T) {
 	}
 }
 
+func TestResolverSelectsExplicitPodAndContainer(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	access.Spec.Containers = []string{"app", "sidecar"}
+	podA := readyPod("notebook-a", map[string]string{"app": "notebook"})
+	podB := readyPod("notebook-b", map[string]string{"app": "notebook"})
+	podB.Spec.Containers = append(podB.Spec.Containers, corev1.Container{Name: "sidecar"})
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {podA, podB}})
+
+	req := accessResolveRequest(access)
+	req.SSHUser = "default.notebook~notebook-b.sidecar"
+	tgt, err := resolver.Resolve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Resolve(explicit pod/container) error = %v", err)
+	}
+	defer tgt.Release()
+	if got := tgt.Option(kube.OptionPods); got != "notebook-b" {
+		t.Fatalf("pod = %q, want notebook-b", got)
+	}
+	if got := tgt.Option(kube.OptionContainers); got != "sidecar" {
+		t.Fatalf("container = %q, want sidecar", got)
+	}
+}
+
+func TestResolverExplicitPodAllowsActiveUnreadyPod(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	ready := readyPod("notebook-a", map[string]string{"app": "notebook"})
+	unready := readyPod("notebook-b", map[string]string{"app": "notebook"})
+	unready.Status.Conditions = nil
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {ready, unready}})
+	req := accessResolveRequest(access)
+	req.SSHUser = "default.notebook~notebook-b"
+
+	tgt, err := resolver.Resolve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Resolve(active unready pod) error = %v", err)
+	}
+	defer tgt.Release()
+	if got := tgt.Option(kube.OptionPods); got != "notebook-b" {
+		t.Fatalf("pod = %q, want notebook-b", got)
+	}
+}
+
+func TestResolverExplicitPodRejectsUnavailablePods(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	deleting := readyPod("notebook-deleting", map[string]string{"app": "notebook"})
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	succeeded := readyPod("notebook-succeeded", map[string]string{"app": "notebook"})
+	succeeded.Status.Phase = corev1.PodSucceeded
+	failed := readyPod("notebook-failed", map[string]string{"app": "notebook"})
+	failed.Status.Phase = corev1.PodFailed
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {deleting, succeeded, failed}})
+
+	for _, pod := range []string{"notebook-missing", deleting.Name, succeeded.Name, failed.Name} {
+		t.Run(pod, func(t *testing.T) {
+			req := accessResolveRequest(access)
+			req.SSHUser = "default.notebook~" + pod
+			if _, err := resolver.Resolve(context.Background(), req); err == nil {
+				t.Fatalf("Resolve(%s) error = nil, want unavailable error", pod)
+			}
+		})
+	}
+}
+
+func TestResolverExplicitPodMustMatchAccessSelector(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	resolver := NewResolver(NewMemoryStore(access), newTestInformerPodLister(t,
+		readyPod("notebook-a", map[string]string{"app": "notebook"}),
+		readyPod("other", map[string]string{"app": "other"}),
+	))
+	req := accessResolveRequest(access)
+	req.SSHUser = "default.notebook~other"
+
+	if _, err := resolver.Resolve(context.Background(), req); err == nil {
+		t.Fatal("Resolve(selector-external pod) error = nil, want unavailable error")
+	}
+}
+
+func TestResolverExplicitPodSupportsDottedPodNames(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	access.Spec.Containers = []string{"app", "sidecar"}
+	pod := readyPod("notebook.a", map[string]string{"app": "notebook"})
+	pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "sidecar"})
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {pod}})
+
+	for _, tc := range []struct {
+		user          string
+		wantContainer string
+	}{
+		{user: "default.notebook~notebook.a", wantContainer: "app"},
+		{user: "default.notebook~notebook.a.sidecar", wantContainer: "sidecar"},
+	} {
+		req := accessResolveRequest(access)
+		req.SSHUser = tc.user
+		tgt, err := resolver.Resolve(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Resolve(%s) error = %v", tc.user, err)
+		}
+		if got := tgt.Option(kube.OptionPods); got != pod.Name {
+			t.Fatalf("Resolve(%s) pod = %q, want %q", tc.user, got, pod.Name)
+		}
+		if got := tgt.Option(kube.OptionContainers); got != tc.wantContainer {
+			t.Fatalf("Resolve(%s) container = %q, want %q", tc.user, got, tc.wantContainer)
+		}
+		tgt.Release()
+	}
+}
+
+func TestResolverRejectsMalformedExplicitPodLocator(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	resolver := NewResolver(NewMemoryStore(access), fakePodLister{"default": {readyPod("notebook-a", map[string]string{"app": "notebook"})}})
+
+	for _, user := range []string{"default.notebook~", "default.notebook~notebook-a."} {
+		t.Run(user, func(t *testing.T) {
+			req := accessResolveRequest(access)
+			req.SSHUser = user
+			if _, err := resolver.Resolve(context.Background(), req); err == nil {
+				t.Fatalf("Resolve(%s) error = nil, want invalid target", user)
+			}
+		})
+	}
+}
+
 func TestResolverRejectsAccessMismatch(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
 	resolver := NewResolver(NewMemoryStore(access), fakePodLister{})
@@ -283,6 +406,10 @@ func TestResolverSelectsAndRestrictsContainers(t *testing.T) {
 	req.SSHUser = "default.notebook.debug"
 	if _, err := resolver.Resolve(context.Background(), req); err == nil {
 		t.Fatal("Resolve(debug) error = nil, want credential container denial")
+	}
+	req.SSHUser = "default.notebook~notebook-a.debug"
+	if _, err := resolver.Resolve(context.Background(), req); err == nil {
+		t.Fatal("Resolve(explicit pod/debug) error = nil, want credential container denial")
 	}
 }
 
@@ -421,6 +548,41 @@ func TestResolverLeastConnectionsTracksConnectionRelease(t *testing.T) {
 	}
 }
 
+func TestResolverExplicitPodParticipatesInLeastConnections(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	access.Spec.Strategy = &sshv1.AccessStrategy{Type: sshv1.AccessStrategyTypeLeastConnections}
+	pods := fakePodLister{"default": {
+		readyPod("notebook-a", map[string]string{"app": "notebook"}),
+		readyPod("notebook-b", map[string]string{"app": "notebook"}),
+	}}
+	resolver := NewResolver(NewMemoryStore(access), pods)
+
+	explicitReq := accessResolveRequest(access)
+	explicitReq.SSHUser = "default.notebook~notebook-a"
+	explicit, err := resolver.Resolve(context.Background(), explicitReq)
+	if err != nil {
+		t.Fatalf("explicit Resolve() error = %v", err)
+	}
+	automatic, err := resolver.Resolve(context.Background(), accessResolveRequest(access))
+	if err != nil {
+		t.Fatalf("automatic Resolve() error = %v", err)
+	}
+	if got := automatic.Option(kube.OptionPods); got != "notebook-b" {
+		t.Fatalf("automatic pod with explicit connection = %q, want notebook-b", got)
+	}
+	automatic.Release()
+	explicit.Release()
+
+	afterRelease, err := resolver.Resolve(context.Background(), accessResolveRequest(access))
+	if err != nil {
+		t.Fatalf("Resolve() after release error = %v", err)
+	}
+	defer afterRelease.Release()
+	if got := afterRelease.Option(kube.OptionPods); got != "notebook-a" {
+		t.Fatalf("pod after release = %q, want notebook-a", got)
+	}
+}
+
 func TestResolverSessionAffinityReusesCredentialBackend(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
 	access.Spec.Strategy = &sshv1.AccessStrategy{
@@ -448,6 +610,38 @@ func TestResolverSessionAffinityReusesCredentialBackend(t *testing.T) {
 	defer second.Release()
 	if first.Option(kube.OptionPods) != second.Option(kube.OptionPods) {
 		t.Fatalf("affinity pods = %q and %q, want same", first.Option(kube.OptionPods), second.Option(kube.OptionPods))
+	}
+}
+
+func TestResolverExplicitPodDoesNotReadOrWriteSessionAffinity(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	access.Spec.Strategy = &sshv1.AccessStrategy{
+		Type: sshv1.AccessStrategyTypeRandom,
+		SessionAffinity: &sshv1.AccessSessionAffinity{
+			Type: sshv1.AccessSessionAffinityTypeCredential,
+		},
+	}
+	pods := fakePodLister{"default": {
+		readyPod("notebook-a", map[string]string{"app": "notebook"}),
+		readyPod("notebook-b", map[string]string{"app": "notebook"}),
+	}}
+	resolver := NewResolver(NewMemoryStore(access), pods)
+	key := accessKey(access.Namespace, access.Name) + "\x00" + string(sshv1.AccessSessionAffinityTypeCredential) + "\x00alice"
+	entry := affinityEntry{backendKey: "default/notebook-a", expiresAt: time.Now().Add(time.Hour)}
+	resolver.selector.affinity[key] = entry
+
+	req := accessResolveRequest(access)
+	req.SSHUser = "default.notebook~notebook-b"
+	tgt, err := resolver.Resolve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("explicit Resolve() error = %v", err)
+	}
+	defer tgt.Release()
+	if got := tgt.Option(kube.OptionPods); got != "notebook-b" {
+		t.Fatalf("explicit pod = %q, want notebook-b", got)
+	}
+	if got := resolver.selector.affinity[key]; got != entry {
+		t.Fatalf("affinity = %#v, want unchanged %#v", got, entry)
 	}
 }
 
@@ -566,8 +760,26 @@ func TestAccessStatusControllerReportsReadyBackend(t *testing.T) {
 	if got := conditionStatus(status.Conditions, sshv1.AccessConditionReady); got != metav1.ConditionTrue {
 		t.Fatalf("Ready condition = %s, want True", got)
 	}
-	if status.SelectedBackend != "pod/default/notebook-a/app" {
-		t.Fatalf("SelectedBackend = %q, want pod/default/notebook-a/app", status.SelectedBackend)
+}
+
+func TestAccessStatusControllerReportsActiveUnreadyBackend(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
+	pod := readyPod("notebook-a", map[string]string{"app": "notebook"})
+	pod.Status.Conditions = nil
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
+	controller := NewAccessStatusController(
+		policyCache,
+		newTestInformerPodLister(t, pod),
+		policyCache.secretIndexer,
+		nil,
+		AccessStatusControllerOptions{
+			Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"},
+		},
+	)
+
+	status := controller.statusFor(context.Background(), access)
+	if got := conditionStatus(status.Conditions, sshv1.AccessConditionReady); got != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %s, want True", got)
 	}
 }
 

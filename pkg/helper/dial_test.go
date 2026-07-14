@@ -3,11 +3,16 @@ package helper
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"strconv"
 	"testing"
 	"time"
 )
+
+func newPipe() (*io.PipeReader, *io.PipeWriter) {
+	return io.Pipe()
+}
 
 func TestRunDialUsesProxyAndReturnsWhenRemoteCloses(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

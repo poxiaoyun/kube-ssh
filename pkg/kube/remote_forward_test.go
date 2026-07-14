@@ -12,11 +12,12 @@ import (
 
 	"xiaoshiai.cn/kube-ssh/pkg/backend"
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/helper"
+	"xiaoshiai.cn/kube-ssh/pkg/spdyrpc"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
 func TestRemoteForwardAcquireHelperFailure(t *testing.T) {
-	b := &Backend{helperProvider: &testHelperProvider{err: fmt.Errorf("helper unavailable")}}
+	b := &Backend{helperAcquirer: &testHelperAcquirer{err: fmt.Errorf("helper unavailable")}}
 
 	_, err := b.RemoteForward(context.Background(), backend.RemoteForwardRequest{
 		Target:   kubeTargetFixture(),
@@ -27,10 +28,10 @@ func TestRemoteForwardAcquireHelperFailure(t *testing.T) {
 	}
 }
 
-func TestRemoteForwardHelperRuntimeExitError(t *testing.T) {
-	helper := &testHelperHandle{path: "/helper"}
+func TestRemoteForwardHelperConnectionExitError(t *testing.T) {
+	helper := &testHelperLease{path: "/helper"}
 	b := &Backend{
-		helperProvider: &testHelperProvider{handle: helper},
+		helperAcquirer: &testHelperAcquirer{handle: helper},
 		execOverride: func(_ context.Context, req backend.ExecRequest) (int, error) {
 			_, _ = req.Stderr.Write([]byte("boom"))
 			return 2, nil
@@ -47,15 +48,15 @@ func TestRemoteForwardHelperRuntimeExitError(t *testing.T) {
 	waitHelperRelease(t, helper, 1)
 }
 
-func TestRemoteForwardRunsHelperRuntimeAndReleasesOnClose(t *testing.T) {
-	helper := &testHelperHandle{path: "/helper"}
+func TestRemoteForwardServesHelperConnectionAndReleasesOnClose(t *testing.T) {
+	helper := &testHelperLease{path: "/helper"}
 	b := &Backend{
-		helperProvider: &testHelperProvider{handle: helper},
+		helperAcquirer: &testHelperAcquirer{handle: helper},
 		execOverride: func(ctx context.Context, req backend.ExecRequest) (int, error) {
-			if got := req.Command; len(got) != 2 || got[0] != "/helper" || got[1] != helperpkg.CommandRuntime {
+			if got := req.Command; len(got) != 2 || got[0] != "/helper" || got[1] != helperpkg.CommandServe {
 				t.Fatalf("helper command = %#v", got)
 			}
-			return 0, helperpkg.RunRuntime(ctx, req.Stdin, req.Stdout)
+			return 0, helperpkg.ServeConnection(ctx, req.Stdin, req.Stdout, spdyrpc.ConnectionOptions{})
 		},
 	}
 
@@ -95,33 +96,33 @@ func TestRemoteForwardRunsHelperRuntimeAndReleasesOnClose(t *testing.T) {
 	waitHelperRelease(t, helper, 1)
 }
 
-type testHelperProvider struct {
-	handle HelperHandle
+type testHelperAcquirer struct {
+	handle helperLease
 	err    error
 }
 
-func (p *testHelperProvider) Acquire(ctx context.Context, tgt *target.Target, capability string) (HelperHandle, error) {
+func (p *testHelperAcquirer) Acquire(ctx context.Context, tgt *target.Target, capability string) (helperLease, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
 	if p.handle == nil {
-		return nil, fmt.Errorf("missing helper handle")
+		return nil, fmt.Errorf("missing helper lease")
 	}
 	return p.handle, nil
 }
 
-type testHelperHandle struct {
+type testHelperLease struct {
 	path         string
 	releaseCount atomic.Int32
 }
 
-func (h *testHelperHandle) Command(args ...string) []string {
+func (h *testHelperLease) Command(args ...string) []string {
 	command := []string{h.path}
 	command = append(command, args...)
 	return command
 }
 
-func (h *testHelperHandle) Release(ctx context.Context) error {
+func (h *testHelperLease) Release(ctx context.Context) error {
 	h.releaseCount.Add(1)
 	return nil
 }
@@ -135,7 +136,7 @@ func readKubeRemoteForwardExactly(t *testing.T, r io.Reader, n int) string {
 	return string(buf)
 }
 
-func waitHelperRelease(t *testing.T, helper *testHelperHandle, want int32) {
+func waitHelperRelease(t *testing.T, helper *testHelperLease, want int32) {
 	t.Helper()
 	deadline := time.After(time.Second)
 	ticker := time.NewTicker(10 * time.Millisecond)

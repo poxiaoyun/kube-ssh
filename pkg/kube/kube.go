@@ -8,9 +8,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Build returns a Kubernetes clientset and rest.Config.
-// If kubeconfigPath is empty, in-cluster config or the default loading rules are used.
-func Build(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
+// LoadConfig loads an explicit kubeconfig or the default client-go config.
+func LoadConfig(kubeconfigPath string) (*rest.Config, error) {
 	var (
 		restConfig *rest.Config
 		err        error
@@ -25,11 +24,15 @@ func Build(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
 		).ClientConfig()
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("build kubeconfig: %w", err)
+		return nil, fmt.Errorf("load kubeconfig: %w", err)
 	}
+	return restConfig, nil
+}
+
+func NewClient(restConfig *rest.Config) (kubernetes.Interface, error) {
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build kubernetes client: %w", err)
+		return nil, fmt.Errorf("create kubernetes client: %w", err)
 	}
-	return client, restConfig, nil
+	return client, nil
 }

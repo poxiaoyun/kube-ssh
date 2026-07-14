@@ -20,6 +20,12 @@ type HalfCloser interface {
 	CloseWrite() error
 }
 
+// Waiter is implemented by streams that report an asynchronous terminal
+// result after their data path has finished.
+type Waiter interface {
+	Wait() error
+}
+
 type StreamObserver interface {
 	StreamOpened(kind string)
 	StreamClosed(kind string)
@@ -77,6 +83,15 @@ func ProxyWithObserver(ctx context.Context, a, b HalfCloser, observer StreamObse
 		case <-ctx.Done():
 			closeOnce.Do(closeBoth)
 			return nil
+		}
+	}
+	// Wait before the deferred close tears down any control or error streams
+	// needed to obtain the remote terminal result.
+	for _, stream := range []HalfCloser{a, b} {
+		if waiter, ok := stream.(Waiter); ok {
+			if err := waiter.Wait(); err != nil && result == nil {
+				result = err
+			}
 		}
 	}
 	return result

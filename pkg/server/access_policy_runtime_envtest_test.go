@@ -176,7 +176,6 @@ var _ = Describe("Access policy runtime", func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(envtestConditionStatus(access.Status.Conditions, v1.AccessConditionValid)).To(Equal(metav1.ConditionTrue))
 			g.Expect(envtestConditionStatus(access.Status.Conditions, v1.AccessConditionReady)).To(Equal(metav1.ConditionTrue))
-			g.Expect(access.Status.SelectedBackend).To(Equal("pod/" + ns + "/notebook-a/app"))
 			g.Expect(access.Status.ObservedGeneration).To(Equal(access.Generation))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 	})

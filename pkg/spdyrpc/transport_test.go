@@ -1,4 +1,4 @@
-package helper
+package spdyrpc
 
 import (
 	"encoding/json"
@@ -10,32 +10,33 @@ import (
 
 	"k8s.io/streaming/pkg/httpstream"
 	"k8s.io/streaming/pkg/httpstream/spdy"
+	"xiaoshiai.cn/kube-ssh/pkg/util"
 )
 
-func TestSPDYOverStdioConn(t *testing.T) {
+func TestSPDYOverstdioConn(t *testing.T) {
 	serverSide, clientSide := newStdioConnPair()
 	defer serverSide.Close()
 	defer clientSide.Close()
 
-	controlCh := make(chan RuntimeResponse, 1)
-	remoteHeadersCh := make(chan http.Header, 1)
+	controlCh := make(chan rpcResponse, 1)
+	dataHeadersCh := make(chan http.Header, 1)
 	serverConn, err := spdy.NewServerConnection(serverSide, func(stream httpstream.Stream, replySent <-chan struct{}) error {
 		switch stream.Headers().Get(StreamTypeHeader) {
 		case StreamTypeControl:
 			go func() {
 				<-replySent
 				defer stream.Close()
-				control := RuntimeResponse{}
+				control := rpcResponse{}
 				if err := json.NewDecoder(stream).Decode(&control); err != nil {
 					t.Errorf("decode control: %v", err)
 					return
 				}
 				controlCh <- control
 			}()
-		case StreamTypeRemoteForwardConnection:
+		case "test.data":
 			go func() {
 				<-replySent
-				remoteHeadersCh <- stream.Headers()
+				dataHeadersCh <- stream.Headers()
 			}()
 		default:
 			t.Errorf("unexpected stream type %q", stream.Headers().Get(StreamTypeHeader))
@@ -53,15 +54,17 @@ func TestSPDYOverStdioConn(t *testing.T) {
 	}
 	defer clientConn.Close()
 
-	control, err := clientConn.CreateStream(ControlHeaders())
+	controlHeaders := http.Header{}
+	controlHeaders.Set(StreamTypeHeader, StreamTypeControl)
+	control, err := clientConn.CreateStream(controlHeaders)
 	if err != nil {
 		t.Fatalf("CreateStream(control) error = %v", err)
 	}
-	payload, err := json.Marshal(RemoteForwardListenResponse{ActualPort: 4222})
+	payload, err := json.Marshal("response")
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if err := json.NewEncoder(control).Encode(RuntimeResponse{OK: true, Payload: payload}); err != nil {
+	if err := json.NewEncoder(control).Encode(rpcResponse{OK: true, Payload: payload}); err != nil {
 		t.Fatalf("encode control: %v", err)
 	}
 	_ = control.Close()
@@ -71,42 +74,36 @@ func TestSPDYOverStdioConn(t *testing.T) {
 		if !control.OK {
 			t.Fatal("control OK = false")
 		}
-		response := RemoteForwardListenResponse{}
+		response := ""
 		if err := json.Unmarshal(control.Payload, &response); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
-		if response.ActualPort != 4222 {
-			t.Fatalf("ActualPort = %d, want 4222", response.ActualPort)
+		if response != "response" {
+			t.Fatalf("response = %q, want response", response)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for control stream")
 	}
 
-	remote, err := clientConn.CreateStream(RemoteForwardHeaders("127.0.0.1:4222", "127.0.0.1:0", "127.0.0.1", "5151"))
+	headers := http.Header{}
+	headers.Set(StreamTypeHeader, "test.data")
+	headers.Set("testValue", "value")
+	data, err := clientConn.CreateStream(headers)
 	if err != nil {
-		t.Fatalf("CreateStream(remote-forward) error = %v", err)
+		t.Fatalf("CreateStream(data) error = %v", err)
 	}
-	defer remote.Close()
+	defer data.Close()
 
 	select {
-	case headers := <-remoteHeadersCh:
-		if got := headers.Get(StreamTypeHeader); got != StreamTypeRemoteForwardConnection {
-			t.Fatalf("stream type = %q, want %q", got, StreamTypeRemoteForwardConnection)
+	case headers := <-dataHeadersCh:
+		if got := headers.Get(StreamTypeHeader); got != "test.data" {
+			t.Fatalf("stream type = %q, want test.data", got)
 		}
-		if got := headers.Get(RemoteForwardBindHeader); got != "127.0.0.1:4222" {
-			t.Fatalf("remote-forward bind = %q, want 127.0.0.1:4222", got)
-		}
-		if got := headers.Get(RemoteForwardRequestedBindHeader); got != "127.0.0.1:0" {
-			t.Fatalf("remote-forward requested bind = %q, want 127.0.0.1:0", got)
-		}
-		if got := headers.Get(OriginHostHeader); got != "127.0.0.1" {
-			t.Fatalf("origin host = %q, want 127.0.0.1", got)
-		}
-		if got := headers.Get(OriginPortHeader); got != "5151" {
-			t.Fatalf("origin port = %q, want 5151", got)
+		if got := headers.Get("testValue"); got != "value" {
+			t.Fatalf("test value = %q, want value", got)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for remote-forward stream")
+		t.Fatal("timed out waiting for data stream")
 	}
 }
 
@@ -114,12 +111,12 @@ func newStdioConnPair() (net.Conn, net.Conn) {
 	clientToServerReader, clientToServerWriter := io.Pipe()
 	serverToClientReader, serverToClientWriter := io.Pipe()
 
-	server := NewStdioConn(clientToServerReader, serverToClientWriter, func() error {
+	server := util.NewStdioConn(clientToServerReader, serverToClientWriter, func() error {
 		_ = clientToServerReader.Close()
 		_ = serverToClientWriter.Close()
 		return nil
 	})
-	client := NewStdioConn(serverToClientReader, clientToServerWriter, func() error {
+	client := util.NewStdioConn(serverToClientReader, clientToServerWriter, func() error {
 		_ = serverToClientReader.Close()
 		_ = clientToServerWriter.Close()
 		return nil

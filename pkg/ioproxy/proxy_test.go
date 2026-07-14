@@ -131,6 +131,45 @@ func TestProxyReturnsCopyError(t *testing.T) {
 	}
 }
 
+func TestProxyWaitsForTerminalResultBeforeClose(t *testing.T) {
+	wantErr := errors.New("remote operation failed")
+	waited := make(chan struct{})
+	stream := &waitingHalfCloser{
+		HalfCloser: errWriteHalfCloser{},
+		waited:     waited,
+		closed:     make(chan struct{}),
+		waitErr:    wantErr,
+	}
+
+	err := Proxy(context.Background(), stream, errWriteHalfCloser{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Proxy() error = %v, want %v", err, wantErr)
+	}
+	waitClosed(t, waited, "Wait")
+}
+
+type waitingHalfCloser struct {
+	HalfCloser
+	waited  chan struct{}
+	closed  chan struct{}
+	waitErr error
+}
+
+func (c *waitingHalfCloser) Wait() error {
+	close(c.waited)
+	select {
+	case <-c.closed:
+		return errors.New("Wait called after Close")
+	default:
+	}
+	return c.waitErr
+}
+
+func (c *waitingHalfCloser) Close() error {
+	close(c.closed)
+	return c.HalfCloser.Close()
+}
+
 type testHalfCloser struct {
 	input        *io.PipeWriter
 	read         *io.PipeReader

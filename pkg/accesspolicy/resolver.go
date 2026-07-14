@@ -3,12 +3,13 @@ package accesspolicy
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/kube"
 	"xiaoshiai.cn/kube-ssh/pkg/status"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
+	"xiaoshiai.cn/kube-ssh/pkg/util/pattern"
 )
 
 type Resolver struct {
@@ -23,6 +24,13 @@ type ContainerPolicy struct {
 	LimitMode   string
 }
 
+type AccessLocator struct {
+	namespace string
+	access    string
+	pod       string
+	container string
+}
+
 func NewResolver(store AccessGetter, pods PodLister, policies ...ContainerPolicy) *Resolver {
 	r := &Resolver{store: store, pods: pods, selector: NewStrategySelector(), policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"}}
 	if len(policies) > 0 {
@@ -32,20 +40,20 @@ func NewResolver(store AccessGetter, pods PodLister, policies ...ContainerPolicy
 }
 
 func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
-	namespace, name, container, ok, err := parseAccessLocator(req.SSHUser, req.AuthExtra)
+	locator, provided, err := ParseAccessLocator(req.SSHUser, req.AuthExtra)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	if !provided {
 		return nil, target.ErrNotProvided
 	}
-	if err := requireAuthAccess(req.AuthExtra, namespace, name); err != nil {
+	if err := requireAuthAccess(req.AuthExtra, locator.namespace, locator.access); err != nil {
 		return nil, err
 	}
 	if r == nil || r.store == nil {
 		return nil, fmt.Errorf("access resolver requires a store")
 	}
-	access, err := r.store.Get(ctx, namespace, name)
+	access, err := r.store.Get(ctx, locator.namespace, locator.access)
 	if err != nil {
 		return nil, target.ErrNotProvided
 	}
@@ -55,65 +63,116 @@ func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*tar
 	if r.pods == nil {
 		return nil, fmt.Errorf("access resolver requires a pod lister")
 	}
-	pods, err := r.pods.List(ctx, namespace, access.Spec.Selector)
+	pods, err := r.pods.List(ctx, locator.namespace, access.Spec.Selector)
 	if err != nil {
 		return nil, err
 	}
-	selection, ok := r.selector.SelectPod(access, pods, req)
-	if !ok {
-		return nil, status.InvalidTarget("access %s/%s matched no available pods", namespace, name)
+	if locator.pod != "" {
+		podName, explicitContainer, found := resolveExplicitPodLocator(pods, locator.pod)
+		if !found {
+			return nil, status.InvalidTarget("pod %q is not available through access %s/%s", locator.pod, locator.namespace, locator.access)
+		}
+		locator.pod = podName
+		locator.container = explicitContainer
 	}
-	requestedContainer := container
-	container, defaultContainer, err := kube.ResolvePodContainer(&selection.pod, container)
+	var selection podSelection
+	var selected bool
+	if locator.pod != "" {
+		selection, selected = r.selector.SelectPodByName(access, pods, locator.pod)
+	} else {
+		selection, selected = r.selector.SelectPod(access, pods, req)
+	}
+	if !selected {
+		if locator.pod != "" {
+			return nil, status.InvalidTarget("pod %q is not available through access %s/%s", locator.pod, locator.namespace, locator.access)
+		}
+		return nil, status.InvalidTarget("access %s/%s matched no available pods", locator.namespace, locator.access)
+	}
+	requestedContainer := locator.container
+	container, defaultContainer, err := kube.ResolvePodContainer(&selection.pod, locator.container)
 	if err != nil {
 		selection.release()
 		return nil, err
 	}
-	credential := findCredential(access, firstExtra(req.AuthExtra, ExtraCredentialUser))
+	credential := findCredential(access, GetExtra(req.AuthExtra, ExtraCredentialUser))
 	accessAllowed := kube.ContainerModeAllows(r.policy.DefaultMode, requestedContainer != "", container, defaultContainer)
 	if len(access.Spec.Containers) > 0 {
 		accessAllowed = containerAllowed(access.Spec.Containers, container)
 	}
 	if !accessAllowed || !kube.ContainerModeAllows(r.policy.LimitMode, requestedContainer != "", container, defaultContainer) || (credential != nil && !containerAllowed(credential.Containers, container)) {
 		selection.release()
-		return nil, status.InvalidTarget("container %q is not allowed by access %s/%s", container, namespace, name)
+		return nil, status.InvalidTarget("container %q is not allowed by access %s/%s", container, locator.namespace, locator.access)
 	}
-	return target.WithRelease(kube.NewTarget(namespace, selection.pod.Name, container), selection.release), nil
+	return target.WithRelease(kube.NewTarget(locator.namespace, selection.pod.Name, container), selection.release), nil
 }
 
-func parseAccessLocator(sshUser string, extra map[string][]string) (string, string, string, bool, error) {
-	authNamespace := firstExtra(extra, ExtraAccessNamespace)
-	authName := firstExtra(extra, ExtraAccessName)
+func ParseAccessLocator(sshUser string, extra map[string][]string) (AccessLocator, bool, error) {
+	authNamespace := GetExtra(extra, ExtraAccessNamespace)
+	authName := GetExtra(extra, ExtraAccessName)
 	if authNamespace != "" || authName != "" {
 		if authNamespace == "" || authName == "" {
-			return "", "", "", false, status.InvalidTarget("authenticated access identity is incomplete")
+			return AccessLocator{}, false, status.InvalidTarget("authenticated access identity is incomplete")
 		}
 		prefix := authNamespace + "." + authName
 		switch {
 		case sshUser == prefix:
-			return authNamespace, authName, "", true, nil
+			return AccessLocator{namespace: authNamespace, access: authName}, true, nil
+		case strings.HasPrefix(sshUser, prefix+"~"):
+			pod := strings.TrimPrefix(sshUser, prefix+"~")
+			if pod != "" {
+				return AccessLocator{namespace: authNamespace, access: authName, pod: pod}, true, nil
+			}
 		case strings.HasPrefix(sshUser, prefix+"."):
 			container := strings.TrimPrefix(sshUser, prefix+".")
 			if container != "" && !strings.Contains(container, ".") {
-				return authNamespace, authName, container, true, nil
+				return AccessLocator{namespace: authNamespace, access: authName, container: container}, true, nil
 			}
 		}
-		return "", "", "", false, status.InvalidTarget("target %q does not match authenticated access %s/%s", sshUser, authNamespace, authName)
+		return AccessLocator{}, false, status.InvalidTarget("target %q does not match authenticated access %s/%s", sshUser, authNamespace, authName)
 	}
 	namespace, name, ok := strings.Cut(sshUser, ".")
 	if !ok || namespace == "" || name == "" {
-		return "", "", "", false, nil
+		return AccessLocator{}, false, nil
 	}
-	return namespace, name, "", true, nil
+	return AccessLocator{namespace: namespace, access: name}, true, nil
+}
+
+// resolveExplicitPodLocator interprets an explicit locator against active Pods
+// already selected by the Access. An exact Pod name wins; otherwise the final
+// dot separates the Pod and container names.
+func resolveExplicitPodLocator(pods []corev1.Pod, locator string) (string, string, bool) {
+	active := activePods(pods)
+	for i := range active {
+		if active[i].Name == locator {
+			return locator, "", true
+		}
+	}
+	pod, container, ok := strings.Cut(locator, ".")
+	if !ok || pod == "" || container == "" {
+		return "", "", false
+	}
+	if strings.Contains(container, ".") {
+		idx := strings.LastIndex(locator, ".")
+		pod, container = locator[:idx], locator[idx+1:]
+	}
+	if pod == "" || container == "" {
+		return "", "", false
+	}
+	for i := range active {
+		if active[i].Name == pod {
+			return pod, container, true
+		}
+	}
+	return "", "", false
 }
 
 func containerAllowed(allow []string, container string) bool {
-	return len(allow) == 0 || slices.Contains(allow, "*") || slices.Contains(allow, container)
+	return len(allow) == 0 || pattern.MatchAny(allow, container)
 }
 
 func requireAuthAccess(extra map[string][]string, namespace, name string) error {
-	authNamespace := firstExtra(extra, ExtraAccessNamespace)
-	authName := firstExtra(extra, ExtraAccessName)
+	authNamespace := GetExtra(extra, ExtraAccessNamespace)
+	authName := GetExtra(extra, ExtraAccessName)
 	if authNamespace == "" && authName == "" {
 		return nil
 	}
@@ -123,7 +182,7 @@ func requireAuthAccess(extra map[string][]string, namespace, name string) error 
 	return nil
 }
 
-func firstExtra(extra map[string][]string, key string) string {
+func GetExtra(extra map[string][]string, key string) string {
 	values := extra[key]
 	if len(values) == 0 {
 		return ""

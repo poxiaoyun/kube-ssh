@@ -95,8 +95,7 @@ func (e *Error) Unwrap() error {
 }
 
 func ReasonForError(err error) metav1.StatusReason {
-	var statusErr *Error
-	if errors.As(err, &statusErr) {
+	if statusErr, ok := errors.AsType[*Error](err); ok {
 		return statusErr.Status.Reason
 	}
 	return metav1.StatusReasonUnknown
