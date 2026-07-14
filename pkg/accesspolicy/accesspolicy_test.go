@@ -47,7 +47,7 @@ func TestAuthenticatorMatchesPublicKey(t *testing.T) {
 	)
 	authenticator := NewAuthenticator(policyCache)
 
-	info, err := authenticator.AuthenticatePublicKey(context.Background(), pubkey)
+	info, err := authenticator.AuthenticatePublicKey(context.Background(), "default.notebook", pubkey)
 	if err != nil {
 		t.Fatalf("AuthenticatePublicKey() error = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestAuthenticatorMatchesSecretRefs(t *testing.T) {
 	if _, err := authenticator.AuthenticateBasic(context.Background(), "default.notebook", "secret-token"); err != nil {
 		t.Fatalf("AuthenticateBasic() error = %v", err)
 	}
-	info, err := authenticator.AuthenticatePublicKey(context.Background(), pubkey)
+	info, err := authenticator.AuthenticatePublicKey(context.Background(), "default.notebook", pubkey)
 	if err != nil {
 		t.Fatalf("AuthenticatePublicKey() error = %v", err)
 	}
@@ -82,17 +82,78 @@ func TestAuthenticatorMatchesSecretRefs(t *testing.T) {
 	}
 }
 
-func TestPolicyCacheDuplicateUsesOldestAccess(t *testing.T) {
+func TestPolicyCacheScopesDuplicatePasswordToRequestedAccess(t *testing.T) {
 	newer := accessFixture("default", "newer", "bob", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(20, 0))
 	older := accessFixture("default", "older", "alice", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(10, 0))
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{newer, older}, nil)
 
-	match, err := policyCache.MatchPassword(context.Background(), "shared")
+	match, err := policyCache.MatchPassword(context.Background(), "default.older", "shared")
 	if err != nil {
 		t.Fatalf("MatchPassword() error = %v", err)
 	}
 	if match.Access.Name != "older" || match.Credential.Username != "alice" {
 		t.Fatalf("match = %s/%s %s", match.Access.Namespace, match.Access.Name, match.Credential.Username)
+	}
+	match, err = policyCache.MatchPassword(context.Background(), "default.newer", "shared")
+	if err != nil {
+		t.Fatalf("MatchPassword(newer) error = %v", err)
+	}
+	if match.Access.Name != "newer" || match.Credential.Username != "bob" {
+		t.Fatalf("newer match = %s/%s %s", match.Access.Namespace, match.Access.Name, match.Credential.Username)
+	}
+}
+
+func TestPolicyCacheScopesDuplicatePublicKeyToRequestedAccess(t *testing.T) {
+	pubkey := testPublicKey(t)
+	keyLine := string(cryptossh.MarshalAuthorizedKey(pubkey))
+	first := accessFixture("default", "first", "alice", sshv1.Credential{PublicKeys: []string{keyLine}}, time.Unix(10, 0))
+	second := accessFixture("default", "second", "bob", sshv1.Credential{PublicKeys: []string{keyLine}}, time.Unix(20, 0))
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{first, second}, nil)
+
+	for _, tc := range []struct {
+		sshUser string
+		want    string
+	}{
+		{sshUser: "default.first", want: "alice"},
+		{sshUser: "default.second", want: "bob"},
+	} {
+		match, err := policyCache.MatchPublicKey(context.Background(), tc.sshUser, pubkey)
+		if err != nil {
+			t.Fatalf("MatchPublicKey(%s) error = %v", tc.sshUser, err)
+		}
+		if match.Credential.Username != tc.want {
+			t.Fatalf("MatchPublicKey(%s) username = %q, want %q", tc.sshUser, match.Credential.Username, tc.want)
+		}
+	}
+}
+
+func TestPolicyCacheRejectsCredentialMaterialSharedByIdentitiesWithinAccess(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(10, 0))
+	access.Spec.Credentials = append(access.Spec.Credentials, sshv1.AccessCredential{
+		Username:   "bob",
+		Credential: sshv1.Credential{Passwords: []string{"shared"}},
+	})
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
+
+	if _, err := policyCache.MatchPassword(context.Background(), "default.notebook", "shared"); err == nil {
+		t.Fatal("MatchPassword() error = nil, want ambiguous credential identity error")
+	}
+}
+
+func TestPolicyCachePrefersExactDottedAccessName(t *testing.T) {
+	prefix := accessFixture("default", "database", "prefix-user", sshv1.Credential{Passwords: []string{"prefix-token"}}, time.Unix(10, 0))
+	exact := accessFixture("default", "database.readonly", "exact-user", sshv1.Credential{Passwords: []string{"exact-token"}}, time.Unix(20, 0))
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{prefix, exact}, nil)
+
+	match, err := policyCache.MatchPassword(context.Background(), "default.database.readonly", "exact-token")
+	if err != nil {
+		t.Fatalf("MatchPassword() error = %v", err)
+	}
+	if match.Access.Name != "database.readonly" {
+		t.Fatalf("matched Access = %q, want database.readonly", match.Access.Name)
+	}
+	if _, err := policyCache.MatchPassword(context.Background(), "default.database.readonly", "prefix-token"); !errors.Is(err, authn.ErrNotProvided) {
+		t.Fatalf("prefix credential error = %v, want ErrNotProvided", err)
 	}
 }
 
@@ -101,7 +162,7 @@ func TestPolicyCacheIgnoresExternalAccess(t *testing.T) {
 	access.Spec.Type = sshv1.AccessTypeExternal
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
 
-	if _, err := policyCache.MatchPassword(context.Background(), "token"); !errors.Is(err, authn.ErrNotProvided) {
+	if _, err := policyCache.MatchPassword(context.Background(), "default.external", "token"); !errors.Is(err, authn.ErrNotProvided) {
 		t.Fatalf("MatchPassword() error = %v, want ErrNotProvided", err)
 	}
 }
@@ -113,7 +174,7 @@ func TestPolicyCacheMatchesGatewayClassExactly(t *testing.T) {
 	classless := accessFixture("default", "default", "bob", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(20, 0))
 
 	classedCache := newTestPolicyCacheForGateway(t, "", className, []*sshv1.Access{classless, classed}, nil)
-	match, err := classedCache.MatchPassword(context.Background(), "shared")
+	match, err := classedCache.MatchPassword(context.Background(), "default.classed", "shared")
 	if err != nil {
 		t.Fatalf("MatchPassword() error = %v", err)
 	}
@@ -125,7 +186,7 @@ func TestPolicyCacheMatchesGatewayClassExactly(t *testing.T) {
 	}
 
 	defaultCache := newTestPolicyCacheForGateway(t, "", "", []*sshv1.Access{classless, classed}, nil)
-	match, err = defaultCache.MatchPassword(context.Background(), "shared")
+	match, err = defaultCache.MatchPassword(context.Background(), "default.default", "shared")
 	if err != nil {
 		t.Fatalf("classless MatchPassword() error = %v", err)
 	}
@@ -143,8 +204,8 @@ func TestPolicyCacheSecretMustBeReferenced(t *testing.T) {
 	})
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, []*corev1.Secret{secret})
 
-	if _, err := policyCache.MatchPassword(context.Background(), "secret-token"); !errors.Is(err, authn.ErrNotProvided) {
-		t.Fatalf("MatchPassword() error = %v, want ErrNotProvided", err)
+	if _, err := policyCache.MatchPassword(context.Background(), "default.notebook", "secret-token"); err == nil {
+		t.Fatal("MatchPassword() error = nil, want invalid secret reference error")
 	}
 }
 
@@ -153,19 +214,19 @@ func TestPolicyCacheNamespaceScope(t *testing.T) {
 	other := accessFixture("other", "notebook", "bob", sshv1.Credential{Passwords: []string{"other-token"}}, time.Unix(20, 0))
 	policyCache := newTestPolicyCache(t, "allowed", []*sshv1.Access{allowed, other}, nil)
 
-	match, err := policyCache.MatchPassword(context.Background(), "allowed-token")
+	match, err := policyCache.MatchPassword(context.Background(), "allowed.notebook", "allowed-token")
 	if err != nil {
 		t.Fatalf("MatchPassword() error = %v", err)
 	}
 	if match.Access.Namespace != "allowed" || match.Credential.Username != "alice" {
 		t.Fatalf("match = %s/%s %s", match.Access.Namespace, match.Access.Name, match.Credential.Username)
 	}
-	if _, err := policyCache.MatchPassword(context.Background(), "other-token"); !errors.Is(err, authn.ErrNotProvided) {
+	if _, err := policyCache.MatchPassword(context.Background(), "other.notebook", "other-token"); !errors.Is(err, authn.ErrNotProvided) {
 		t.Fatalf("MatchPassword() other namespace error = %v, want ErrNotProvided", err)
 	}
 }
 
-func TestPolicyCacheSecretRefDuplicateUsesOldestAccess(t *testing.T) {
+func TestPolicyCacheScopesDuplicateSecretRefToRequestedAccess(t *testing.T) {
 	newer := accessFixture("default", "newer", "bob", sshv1.Credential{
 		PasswordsFrom: []sshv1.LocalSecretKeyRef{{Name: "access", Key: "passwords"}},
 	}, time.Unix(20, 0))
@@ -177,7 +238,7 @@ func TestPolicyCacheSecretRefDuplicateUsesOldestAccess(t *testing.T) {
 	})
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{newer, older}, []*corev1.Secret{secret})
 
-	match, err := policyCache.MatchPassword(context.Background(), "shared")
+	match, err := policyCache.MatchPassword(context.Background(), "default.older", "shared")
 	if err != nil {
 		t.Fatalf("MatchPassword() error = %v", err)
 	}
@@ -197,8 +258,8 @@ func TestPolicyCacheSecretPublicKeyMustBeReferenced(t *testing.T) {
 	})
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, []*corev1.Secret{secret})
 
-	if _, err := policyCache.MatchPublicKey(context.Background(), pubkey); !errors.Is(err, authn.ErrNotProvided) {
-		t.Fatalf("MatchPublicKey() error = %v, want ErrNotProvided", err)
+	if _, err := policyCache.MatchPublicKey(context.Background(), "default.notebook", pubkey); err == nil {
+		t.Fatal("MatchPublicKey() error = nil, want invalid secret reference error")
 	}
 }
 
@@ -206,7 +267,7 @@ func TestPolicyCacheUpdatesWithIndexer(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token-a"}}, time.Unix(10, 0))
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
 
-	if _, err := policyCache.MatchPassword(context.Background(), "token-a"); err != nil {
+	if _, err := policyCache.MatchPassword(context.Background(), "default.notebook", "token-a"); err != nil {
 		t.Fatalf("MatchPassword() token-a error = %v", err)
 	}
 
@@ -216,10 +277,10 @@ func TestPolicyCacheUpdatesWithIndexer(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	if _, err := policyCache.MatchPassword(context.Background(), "token-a"); !errors.Is(err, authn.ErrNotProvided) {
+	if _, err := policyCache.MatchPassword(context.Background(), "default.notebook", "token-a"); !errors.Is(err, authn.ErrNotProvided) {
 		t.Fatalf("MatchPassword() token-a error = %v, want ErrNotProvided", err)
 	}
-	if _, err := policyCache.MatchPassword(context.Background(), "token-b"); err != nil {
+	if _, err := policyCache.MatchPassword(context.Background(), "default.notebook", "token-b"); err != nil {
 		t.Fatalf("MatchPassword() token-b error = %v", err)
 	}
 }
@@ -838,6 +899,84 @@ func TestAccessStatusControllerReportsMissingSecret(t *testing.T) {
 	}
 }
 
+func TestAccessStatusControllerReportsDuplicateCredentialMaterial(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(10, 0))
+	access.Spec.Credentials = append(access.Spec.Credentials, sshv1.AccessCredential{
+		Username:   "bob",
+		Credential: sshv1.Credential{Passwords: []string{"shared"}},
+	})
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
+	controller := NewAccessStatusController(
+		policyCache,
+		newTestInformerPodLister(t, readyPod("notebook-a", map[string]string{"app": "notebook"})),
+		policyCache.secretIndexer,
+		nil,
+		AccessStatusControllerOptions{Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"}},
+	)
+
+	status := controller.statusFor(context.Background(), access)
+	if got := conditionStatus(status.Conditions, sshv1.AccessConditionValid); got != metav1.ConditionFalse {
+		t.Fatalf("Valid condition = %s, want False", got)
+	}
+	if got := conditionReason(status.Conditions, sshv1.AccessConditionValid); got != "DuplicateCredentialMaterial" {
+		t.Fatalf("Valid reason = %q, want DuplicateCredentialMaterial", got)
+	}
+}
+
+func TestAccessStatusControllerFindsDuplicateMaterialThroughSecretRef(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(10, 0))
+	access.Spec.Credentials = append(access.Spec.Credentials, sshv1.AccessCredential{
+		Username: "bob",
+		Credential: sshv1.Credential{
+			PasswordsFrom: []sshv1.LocalSecretKeyRef{{Name: "bob-auth", Key: "passwords"}},
+		},
+	})
+	secret := secretFixture("default", "bob-auth", map[string]string{"passwords": "shared"})
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, []*corev1.Secret{secret})
+	controller := NewAccessStatusController(policyCache, newTestInformerPodLister(t,
+		readyPod("notebook-a", map[string]string{"app": "notebook"}),
+	), policyCache.secretIndexer, nil, AccessStatusControllerOptions{Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"}})
+
+	status := controller.statusFor(context.Background(), access)
+	if got := conditionReason(status.Conditions, sshv1.AccessConditionValid); got != "DuplicateCredentialMaterial" {
+		t.Fatalf("Valid reason = %q, want DuplicateCredentialMaterial", got)
+	}
+}
+
+func TestAccessStatusControllerDeduplicatesMaterialWithinCredential(t *testing.T) {
+	access := accessFixture("default", "notebook", "alice", sshv1.Credential{
+		Passwords:     []string{"shared"},
+		PasswordsFrom: []sshv1.LocalSecretKeyRef{{Name: "alice-auth", Key: "passwords"}},
+	}, time.Unix(10, 0))
+	secret := secretFixture("default", "alice-auth", map[string]string{"passwords": "shared"})
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, []*corev1.Secret{secret})
+	controller := NewAccessStatusController(policyCache, newTestInformerPodLister(t,
+		readyPod("notebook-a", map[string]string{"app": "notebook"}),
+	), policyCache.secretIndexer, nil, AccessStatusControllerOptions{Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"}})
+
+	status := controller.statusFor(context.Background(), access)
+	if got := conditionStatus(status.Conditions, sshv1.AccessConditionValid); got != metav1.ConditionTrue {
+		t.Fatalf("Valid condition = %s, want True", got)
+	}
+}
+
+func TestAccessStatusControllerAllowsMaterialSharedAcrossAccesses(t *testing.T) {
+	first := accessFixture("default", "first", "alice", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(10, 0))
+	second := accessFixture("default", "second", "bob", sshv1.Credential{Passwords: []string{"shared"}}, time.Unix(20, 0))
+	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{first, second}, nil)
+	controller := NewAccessStatusController(policyCache, newTestInformerPodLister(t,
+		readyPod("first-a", map[string]string{"app": "first"}),
+		readyPod("second-a", map[string]string{"app": "second"}),
+	), policyCache.secretIndexer, nil, AccessStatusControllerOptions{Policy: ContainerPolicy{DefaultMode: "KubernetesDefault", LimitMode: "All"}})
+
+	for _, access := range []*sshv1.Access{first, second} {
+		status := controller.statusFor(context.Background(), access)
+		if got := conditionStatus(status.Conditions, sshv1.AccessConditionValid); got != metav1.ConditionTrue {
+			t.Fatalf("Access %s Valid condition = %s, want True", access.Name, got)
+		}
+	}
+}
+
 func TestAccessStatusControllerAppliesGlobalContainerPolicy(t *testing.T) {
 	access := accessFixture("default", "notebook", "alice", sshv1.Credential{Passwords: []string{"token"}}, time.Unix(10, 0))
 	policyCache := newTestPolicyCache(t, "", []*sshv1.Access{access}, nil)
@@ -906,13 +1045,13 @@ func newTestPolicyCache(t *testing.T, namespace string, accesses []*sshv1.Access
 
 func newTestPolicyCacheForGateway(t *testing.T, namespace, gatewayClassName string, accesses []*sshv1.Access, secrets []*corev1.Secret) *PolicyCache {
 	t.Helper()
-	accessIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, AccessPolicyIndexers())
+	accessIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
 	for _, access := range accesses {
 		if err := accessIndexer.Add(access); err != nil {
 			t.Fatalf("add access %s/%s: %v", access.Namespace, access.Name, err)
 		}
 	}
-	secretIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, SecretPolicyIndexers())
+	secretIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
 	for _, secret := range secrets {
 		if err := secretIndexer.Add(secret); err != nil {
 			t.Fatalf("add secret %s/%s: %v", secret.Namespace, secret.Name, err)

@@ -45,9 +45,9 @@ func (a *metricsAuthenticator) AuthenticateBasic(ctx context.Context, username, 
 	return info, err
 }
 
-func (a *metricsAuthenticator) AuthenticatePublicKey(ctx context.Context, pubkey cryptossh.PublicKey) (*authn.AuthenticateInfo, error) {
+func (a *metricsAuthenticator) AuthenticatePublicKey(ctx context.Context, sshUser string, pubkey cryptossh.PublicKey) (*authn.AuthenticateInfo, error) {
 	start := time.Now()
-	info, err := a.next.AuthenticatePublicKey(ctx, pubkey)
+	info, err := a.next.AuthenticatePublicKey(ctx, sshUser, pubkey)
 	a.recorder.AccessPolicyAuthFinished(metrics.CredentialPublicKey, authResult(err), time.Since(start))
 	return info, err
 }

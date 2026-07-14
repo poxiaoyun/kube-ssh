@@ -34,7 +34,7 @@ func TestStaticPasswordAuthenticator(t *testing.T) {
 	if _, err := authenticator.AuthenticateBasic(context.Background(), "default.shell.app", "bad"); !errors.Is(err, ErrNotProvided) {
 		t.Fatalf("AuthenticateBasic() error = %v, want ErrNotProvided", err)
 	}
-	if _, err := authenticator.AuthenticatePublicKey(context.Background(), testPublicKey(t)); !errors.Is(err, ErrNotProvided) {
+	if _, err := authenticator.AuthenticatePublicKey(context.Background(), "default.shell", testPublicKey(t)); !errors.Is(err, ErrNotProvided) {
 		t.Fatalf("AuthenticatePublicKey() error = %v, want ErrNotProvided", err)
 	}
 }

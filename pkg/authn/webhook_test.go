@@ -78,14 +78,14 @@ func TestWebhookAuthenticatorPublicKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWebhookAuthenticator() error = %v", err)
 	}
-	info, err := authenticator.AuthenticatePublicKey(context.Background(), sshKey)
+	info, err := authenticator.AuthenticatePublicKey(context.Background(), "default.nginx", sshKey)
 	if err != nil {
 		t.Fatalf("AuthenticatePublicKey() error = %v", err)
 	}
 	if info.Method != "webhook" {
 		t.Fatalf("method = %q, want webhook", info.Method)
 	}
-	if got.Type != WebhookCredentialPublicKey || got.PublicKey == nil {
+	if got.Type != WebhookCredentialPublicKey || got.SSHUser != "default.nginx" || got.PublicKey == nil {
 		t.Fatalf("request = %#v", got)
 	}
 	if got.PublicKey.Fingerprint != ssh.FingerprintSHA256(sshKey) {

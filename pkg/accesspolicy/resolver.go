@@ -2,10 +2,12 @@ package accesspolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/kube"
 	"xiaoshiai.cn/kube-ssh/pkg/status"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
@@ -40,21 +42,14 @@ func NewResolver(store AccessGetter, pods PodLister, policies ...ContainerPolicy
 }
 
 func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
-	locator, provided, err := ParseAccessLocator(req.SSHUser, req.AuthExtra)
+	if r == nil || r.store == nil {
+		return nil, fmt.Errorf("access resolver requires a store")
+	}
+	locator, access, provided, err := resolveRequestedAccess(ctx, r.store, req.SSHUser, req.AuthExtra)
 	if err != nil {
 		return nil, err
 	}
 	if !provided {
-		return nil, target.ErrNotProvided
-	}
-	if err := requireAuthAccess(req.AuthExtra, locator.namespace, locator.access); err != nil {
-		return nil, err
-	}
-	if r == nil || r.store == nil {
-		return nil, fmt.Errorf("access resolver requires a store")
-	}
-	access, err := r.store.Get(ctx, locator.namespace, locator.access)
-	if err != nil {
 		return nil, target.ErrNotProvided
 	}
 	if !isPodAccess(access) {
@@ -106,35 +101,77 @@ func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*tar
 	return target.WithRelease(kube.NewTarget(locator.namespace, selection.pod.Name, container), selection.release), nil
 }
 
-func ParseAccessLocator(sshUser string, extra map[string][]string) (AccessLocator, bool, error) {
+func resolveRequestedAccess(ctx context.Context, store AccessGetter, sshUser string, extra map[string][]string) (AccessLocator, *sshv1.Access, bool, error) {
 	authNamespace := GetExtra(extra, ExtraAccessNamespace)
 	authName := GetExtra(extra, ExtraAccessName)
 	if authNamespace != "" || authName != "" {
 		if authNamespace == "" || authName == "" {
-			return AccessLocator{}, false, status.InvalidTarget("authenticated access identity is incomplete")
+			return AccessLocator{}, nil, false, status.InvalidTarget("authenticated access identity is incomplete")
 		}
-		prefix := authNamespace + "." + authName
-		switch {
-		case sshUser == prefix:
-			return AccessLocator{namespace: authNamespace, access: authName}, true, nil
-		case strings.HasPrefix(sshUser, prefix+"~"):
-			pod := strings.TrimPrefix(sshUser, prefix+"~")
-			if pod != "" {
-				return AccessLocator{namespace: authNamespace, access: authName, pod: pod}, true, nil
-			}
-		case strings.HasPrefix(sshUser, prefix+"."):
-			container := strings.TrimPrefix(sshUser, prefix+".")
-			if container != "" && !strings.Contains(container, ".") {
-				return AccessLocator{namespace: authNamespace, access: authName, container: container}, true, nil
-			}
+		locator, ok := parseAccessLocatorFor(sshUser, authNamespace, authName)
+		if !ok {
+			return AccessLocator{}, nil, false, status.InvalidTarget("target %q does not match authenticated access %s/%s", sshUser, authNamespace, authName)
 		}
-		return AccessLocator{}, false, status.InvalidTarget("target %q does not match authenticated access %s/%s", sshUser, authNamespace, authName)
+		access, err := store.Get(ctx, authNamespace, authName)
+		if errors.Is(err, ErrAccessNotFound) {
+			return AccessLocator{}, nil, false, nil
+		}
+		return locator, access, err == nil, err
 	}
-	namespace, name, ok := strings.Cut(sshUser, ".")
-	if !ok || namespace == "" || name == "" {
-		return AccessLocator{}, false, nil
+	return resolveAccessLocator(ctx, store, sshUser)
+}
+
+// resolveAccessLocator identifies the Access before credentials are checked.
+// An exact Access name wins; only when it does not exist is the final dot
+// interpreted as a container separator.
+func resolveAccessLocator(ctx context.Context, store AccessGetter, sshUser string) (AccessLocator, *sshv1.Access, bool, error) {
+	namespace, remainder, ok := strings.Cut(sshUser, ".")
+	if !ok || namespace == "" || remainder == "" {
+		return AccessLocator{}, nil, false, nil
 	}
-	return AccessLocator{namespace: namespace, access: name}, true, nil
+	if name, pod, explicit := strings.Cut(remainder, "~"); explicit {
+		if name == "" || pod == "" {
+			return AccessLocator{}, nil, false, nil
+		}
+		access, err := store.Get(ctx, namespace, name)
+		if errors.Is(err, ErrAccessNotFound) {
+			return AccessLocator{}, nil, false, nil
+		}
+		return AccessLocator{namespace: namespace, access: name, pod: pod}, access, err == nil, err
+	}
+	access, err := store.Get(ctx, namespace, remainder)
+	if err == nil {
+		return AccessLocator{namespace: namespace, access: remainder}, access, true, nil
+	}
+	if !errors.Is(err, ErrAccessNotFound) {
+		return AccessLocator{}, nil, false, err
+	}
+	idx := strings.LastIndexByte(remainder, '.')
+	if idx <= 0 || idx == len(remainder)-1 {
+		return AccessLocator{}, nil, false, nil
+	}
+	name, container := remainder[:idx], remainder[idx+1:]
+	access, err = store.Get(ctx, namespace, name)
+	if errors.Is(err, ErrAccessNotFound) {
+		return AccessLocator{}, nil, false, nil
+	}
+	return AccessLocator{namespace: namespace, access: name, container: container}, access, err == nil, err
+}
+
+func parseAccessLocatorFor(sshUser, namespace, name string) (AccessLocator, bool) {
+	prefix := namespace + "." + name
+	switch {
+	case sshUser == prefix:
+		return AccessLocator{namespace: namespace, access: name}, true
+	case strings.HasPrefix(sshUser, prefix+"~"):
+		pod := strings.TrimPrefix(sshUser, prefix+"~")
+		return AccessLocator{namespace: namespace, access: name, pod: pod}, pod != ""
+	case strings.HasPrefix(sshUser, prefix+"."):
+		container := strings.TrimPrefix(sshUser, prefix+".")
+		return AccessLocator{namespace: namespace, access: name, container: container}, container != "" && !strings.Contains(container, ".")
+	default:
+		return AccessLocator{}, false
+	}
 }
 
 // resolveExplicitPodLocator interprets an explicit locator against active Pods
@@ -168,18 +205,6 @@ func resolveExplicitPodLocator(pods []corev1.Pod, locator string) (string, strin
 
 func containerAllowed(allow []string, container string) bool {
 	return len(allow) == 0 || pattern.MatchAny(allow, container)
-}
-
-func requireAuthAccess(extra map[string][]string, namespace, name string) error {
-	authNamespace := GetExtra(extra, ExtraAccessNamespace)
-	authName := GetExtra(extra, ExtraAccessName)
-	if authNamespace == "" && authName == "" {
-		return nil
-	}
-	if authNamespace != namespace || authName != name {
-		return status.InvalidTarget("authenticated access %s/%s does not match requested access %s/%s", authNamespace, authName, namespace, name)
-	}
-	return nil
 }
 
 func GetExtra(extra map[string][]string, key string) string {

@@ -227,7 +227,7 @@ func (s *Server) metricsRecorder() metrics.Recorder {
 
 func (s *Server) handlePublicKey(ctx gossh.Context, key gossh.PublicKey) bool {
 	fingerprint := cryptossh.FingerprintSHA256(key)
-	info, err := s.authn.AuthenticatePublicKey(ctx, key)
+	info, err := s.authn.AuthenticatePublicKey(ctx, ctx.User(), key)
 	if err != nil {
 		s.recordAuthentication(ctx, metrics.CredentialPublicKey, fingerprint, metrics.ResultRejected, nil, err)
 		s.metricsRecorder().AuthAttempt(metrics.CredentialPublicKey, metrics.ResultRejected)

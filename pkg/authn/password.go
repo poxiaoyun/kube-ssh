@@ -48,6 +48,6 @@ func (a *StaticPasswordAuthenticator) AuthenticateBasic(_ context.Context, _, pa
 	return nil, fmt.Errorf("%w: password rejected", ErrNotProvided)
 }
 
-func (a *StaticPasswordAuthenticator) AuthenticatePublicKey(context.Context, ssh.PublicKey) (*AuthenticateInfo, error) {
+func (a *StaticPasswordAuthenticator) AuthenticatePublicKey(context.Context, string, ssh.PublicKey) (*AuthenticateInfo, error) {
 	return nil, ErrNotProvided
 }

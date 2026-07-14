@@ -42,7 +42,7 @@ func NewStaticPublicKeyAuthenticator(entries []AuthorizedKeyEntry) (*StaticPubli
 }
 
 // AuthenticatePublicKey returns the identity matching pubkey, or an error.
-func (a *StaticPublicKeyAuthenticator) AuthenticatePublicKey(_ context.Context, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
+func (a *StaticPublicKeyAuthenticator) AuthenticatePublicKey(_ context.Context, _ string, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
 	for _, e := range a.entries {
 		if bytes.Equal(e.marshaledKey, pubkey.Marshal()) {
 			return &e.info, nil

@@ -2,9 +2,8 @@ package accesspolicy
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
-	"log/slog"
-	"sort"
 	"strings"
 
 	cryptossh "golang.org/x/crypto/ssh"
@@ -12,15 +11,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
-)
-
-const (
-	accessPasswordIndex     = "accesspolicy.kube-ssh.io/access-password"
-	accessPublicKeyIndex    = "accesspolicy.kube-ssh.io/access-public-key"
-	accessPasswordRefIndex  = "accesspolicy.kube-ssh.io/access-password-ref"
-	accessPublicKeyRefIndex = "accesspolicy.kube-ssh.io/access-public-key-ref"
-	secretPasswordIndex     = "accesspolicy.kube-ssh.io/secret-password"
-	secretPublicKeyIndex    = "accesspolicy.kube-ssh.io/secret-public-key"
 )
 
 type PolicyCache struct {
@@ -44,42 +34,26 @@ func NewPolicyCache(accessIndexer, secretIndexer cache.Indexer, options PolicyCa
 	}
 }
 
-func AccessPolicyIndexers() cache.Indexers {
-	return cache.Indexers{
-		accessPasswordIndex:     indexAccessPasswords,
-		accessPublicKeyIndex:    indexAccessPublicKeys,
-		accessPasswordRefIndex:  indexAccessPasswordRefs,
-		accessPublicKeyRefIndex: indexAccessPublicKeyRefs,
-	}
-}
-
-func SecretPolicyIndexers() cache.Indexers {
-	return cache.Indexers{
-		secretPasswordIndex:  indexSecretPasswords,
-		secretPublicKeyIndex: indexSecretPublicKeys,
-	}
-}
-
 func (c *PolicyCache) Get(_ context.Context, namespace, name string) (*sshv1.Access, error) {
 	if c == nil || c.accessIndexer == nil {
 		return nil, fmt.Errorf("access policy cache requires an access indexer")
 	}
 	if c.namespace != "" && namespace != c.namespace {
-		return nil, fmt.Errorf("access %s/%s outside configured namespace %s", namespace, name, c.namespace)
+		return nil, fmt.Errorf("%w: %s/%s", ErrAccessNotFound, namespace, name)
 	}
 	obj, exists, err := c.accessIndexer.GetByKey(accessKey(namespace, name))
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
-		return nil, fmt.Errorf("access %s/%s not found", namespace, name)
+		return nil, fmt.Errorf("%w: %s/%s", ErrAccessNotFound, namespace, name)
 	}
 	access, ok := obj.(*sshv1.Access)
 	if !ok {
 		return nil, fmt.Errorf("access cache object %s/%s has unexpected type %T", namespace, name, obj)
 	}
 	if !c.acceptAccess(access) {
-		return nil, fmt.Errorf("access %s/%s is not managed by gateway class %q", namespace, name, c.gatewayClassName)
+		return nil, fmt.Errorf("%w: %s/%s", ErrAccessNotFound, namespace, name)
 	}
 	return access.DeepCopy(), nil
 }
@@ -95,9 +69,6 @@ func (c *PolicyCache) List(context.Context) ([]*sshv1.Access, error) {
 		if !ok {
 			return nil, fmt.Errorf("access cache object has unexpected type %T", obj)
 		}
-		if c.namespace != "" && access.Namespace != c.namespace {
-			continue
-		}
 		if !c.acceptAccess(access) {
 			continue
 		}
@@ -107,197 +78,136 @@ func (c *PolicyCache) List(context.Context) ([]*sshv1.Access, error) {
 	return accesses, nil
 }
 
-func (c *PolicyCache) MatchPassword(_ context.Context, token string) (*CredentialMatch, error) {
+func (c *PolicyCache) MatchPassword(ctx context.Context, sshUser, token string) (*CredentialMatch, error) {
 	if token == "" {
 		return nil, authn.ErrNotProvided
 	}
-	seen := map[string]struct{}{}
-	matches := []*CredentialMatch{}
-	if err := c.matchAccessPassword(token, &matches, seen); err != nil {
+	_, access, provided, err := resolveAccessLocator(ctx, c, sshUser)
+	if err != nil {
 		return nil, err
 	}
-	if err := c.matchSecretPassword(token, &matches, seen); err != nil {
-		return nil, err
+	if !provided {
+		return nil, authn.ErrNotProvided
 	}
-	sortMatches(matches)
-	return chooseMatch("password token", matches)
+	matches := make([]int, 0, 1)
+	for i := range access.Spec.Credentials {
+		values, err := c.credentialPasswords(access.Namespace, access.Spec.Credentials[i])
+		if err != nil {
+			return nil, err
+		}
+		for value := range values {
+			if subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1 {
+				matches = append(matches, i)
+				break
+			}
+		}
+	}
+	return credentialMatch(access, matches, "password")
 }
 
-func (c *PolicyCache) MatchPublicKey(_ context.Context, pubkey cryptossh.PublicKey) (*CredentialMatch, error) {
+func (c *PolicyCache) MatchPublicKey(ctx context.Context, sshUser string, pubkey cryptossh.PublicKey) (*CredentialMatch, error) {
 	if pubkey == nil {
 		return nil, authn.ErrNotProvided
 	}
+	_, access, provided, err := resolveAccessLocator(ctx, c, sshUser)
+	if err != nil {
+		return nil, err
+	}
+	if !provided {
+		return nil, authn.ErrNotProvided
+	}
 	fingerprint := cryptossh.FingerprintSHA256(pubkey)
-	seen := map[string]struct{}{}
-	matches := []*CredentialMatch{}
-	if err := c.matchAccessPublicKey(fingerprint, &matches, seen); err != nil {
-		return nil, err
+	matches := make([]int, 0, 1)
+	for i := range access.Spec.Credentials {
+		values, err := c.credentialPublicKeys(access.Namespace, access.Spec.Credentials[i])
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := values[fingerprint]; ok {
+			matches = append(matches, i)
+		}
 	}
-	if err := c.matchSecretPublicKey(fingerprint, &matches, seen); err != nil {
-		return nil, err
-	}
-	sortMatches(matches)
-	return chooseMatch("public key", matches)
+	return credentialMatch(access, matches, "public key")
 }
 
-func (c *PolicyCache) matchAccessPassword(token string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
-	objects, err := c.accessObjectsByIndex(accessPasswordIndex, token)
-	if err != nil {
-		return err
+func credentialMatch(access *sshv1.Access, matches []int, kind string) (*CredentialMatch, error) {
+	if len(matches) == 0 {
+		return nil, authn.ErrNotProvided
 	}
-	for _, access := range objects {
-		if !c.acceptAccess(access) {
-			continue
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("%s maps to multiple credential identities in access %s/%s", kind, access.Namespace, access.Name)
+	}
+	copied := access.DeepCopy()
+	return &CredentialMatch{Access: copied, Credential: &copied.Spec.Credentials[matches[0]]}, nil
+}
+
+func (c *PolicyCache) credentialPasswords(namespace string, credential sshv1.AccessCredential) (map[string]struct{}, error) {
+	values := make(map[string]struct{}, len(credential.Passwords))
+	for _, value := range credential.Passwords {
+		if value != "" {
+			values[value] = struct{}{}
 		}
-		for idx := range access.Spec.Credentials {
-			credential := access.Spec.Credentials[idx]
-			for _, password := range credential.Passwords {
-				if password == token {
-					addCredentialMatch(matches, seen, access, idx)
-					break
-				}
+	}
+	for _, ref := range credential.PasswordsFrom {
+		value, err := c.secretValue(namespace, ref)
+		if err != nil {
+			return nil, err
+		}
+		for _, token := range splitSecretLines(string(value)) {
+			values[token] = struct{}{}
+		}
+	}
+	return values, nil
+}
+
+func (c *PolicyCache) credentialPublicKeys(namespace string, credential sshv1.AccessCredential) (map[string]struct{}, error) {
+	values := make(map[string]struct{}, len(credential.PublicKeys))
+	for _, line := range credential.PublicKeys {
+		fingerprint := keyFingerprint(line)
+		if fingerprint == "" {
+			return nil, fmt.Errorf("credential %q in namespace %q contains an invalid public key", credential.Username, namespace)
+		}
+		values[fingerprint] = struct{}{}
+	}
+	for _, ref := range credential.PublicKeysFrom {
+		value, err := c.secretValue(namespace, ref)
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range splitSecretLines(string(value)) {
+			fingerprint := keyFingerprint(line)
+			if fingerprint == "" {
+				return nil, fmt.Errorf("credential %q public key reference %s/%s:%s contains an invalid public key", credential.Username, namespace, ref.Name, ref.Key)
 			}
+			values[fingerprint] = struct{}{}
 		}
 	}
-	return nil
+	return values, nil
 }
 
-func (c *PolicyCache) matchAccessPublicKey(fingerprint string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
-	objects, err := c.accessObjectsByIndex(accessPublicKeyIndex, fingerprint)
-	if err != nil {
-		return err
+func (c *PolicyCache) secretValue(namespace string, ref sshv1.LocalSecretKeyRef) ([]byte, error) {
+	if ref.Name == "" || ref.Key == "" {
+		return nil, fmt.Errorf("incomplete secret reference in namespace %q", namespace)
 	}
-	for _, access := range objects {
-		if !c.acceptAccess(access) {
-			continue
-		}
-		for idx := range access.Spec.Credentials {
-			credential := access.Spec.Credentials[idx]
-			for _, key := range credential.PublicKeys {
-				if keyFingerprint(key) == fingerprint {
-					addCredentialMatch(matches, seen, access, idx)
-					break
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (c *PolicyCache) matchSecretPassword(token string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
-	secrets, err := c.secretsByValueIndex(secretPasswordIndex, token)
-	if err != nil {
-		return err
-	}
-	for _, secret := range secrets {
-		if !c.acceptSecret(secret) {
-			continue
-		}
-		for _, key := range secretKeysContainingPassword(secret, token) {
-			if err := c.matchAccessPasswordRef(secret.Namespace, secret.Name, key, matches, seen); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (c *PolicyCache) matchSecretPublicKey(fingerprint string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
-	secrets, err := c.secretsByValueIndex(secretPublicKeyIndex, fingerprint)
-	if err != nil {
-		return err
-	}
-	for _, secret := range secrets {
-		if !c.acceptSecret(secret) {
-			continue
-		}
-		for _, key := range secretKeysContainingPublicKey(secret, fingerprint) {
-			if err := c.matchAccessPublicKeyRef(secret.Namespace, secret.Name, key, matches, seen); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (c *PolicyCache) matchAccessPasswordRef(namespace, name, key string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
-	objects, err := c.accessObjectsByIndex(accessPasswordRefIndex, secretRefKey(namespace, name, key))
-	if err != nil {
-		return err
-	}
-	for _, access := range objects {
-		if !c.acceptAccess(access) {
-			continue
-		}
-		for idx := range access.Spec.Credentials {
-			for _, ref := range access.Spec.Credentials[idx].PasswordsFrom {
-				if ref.Name == name && ref.Key == key {
-					addCredentialMatch(matches, seen, access, idx)
-					break
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (c *PolicyCache) matchAccessPublicKeyRef(namespace, name, key string, matches *[]*CredentialMatch, seen map[string]struct{}) error {
-	objects, err := c.accessObjectsByIndex(accessPublicKeyRefIndex, secretRefKey(namespace, name, key))
-	if err != nil {
-		return err
-	}
-	for _, access := range objects {
-		if !c.acceptAccess(access) {
-			continue
-		}
-		for idx := range access.Spec.Credentials {
-			for _, ref := range access.Spec.Credentials[idx].PublicKeysFrom {
-				if ref.Name == name && ref.Key == key {
-					addCredentialMatch(matches, seen, access, idx)
-					break
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (c *PolicyCache) accessObjectsByIndex(indexName, key string) ([]*sshv1.Access, error) {
-	if c == nil || c.accessIndexer == nil {
-		return nil, fmt.Errorf("access policy cache requires an access indexer")
-	}
-	objects, err := c.accessIndexer.ByIndex(indexName, key)
-	if err != nil {
-		return nil, err
-	}
-	accesses := make([]*sshv1.Access, 0, len(objects))
-	for _, obj := range objects {
-		access, ok := obj.(*sshv1.Access)
-		if !ok {
-			return nil, fmt.Errorf("access cache index %q has unexpected object type %T", indexName, obj)
-		}
-		accesses = append(accesses, access)
-	}
-	return accesses, nil
-}
-
-func (c *PolicyCache) secretsByValueIndex(indexName, key string) ([]*corev1.Secret, error) {
 	if c == nil || c.secretIndexer == nil {
-		return nil, nil
+		return nil, fmt.Errorf("access policy cache requires a secret indexer")
 	}
-	objects, err := c.secretIndexer.ByIndex(indexName, key)
+	obj, exists, err := c.secretIndexer.GetByKey(accessKey(namespace, ref.Name))
 	if err != nil {
 		return nil, err
 	}
-	secrets := make([]*corev1.Secret, 0, len(objects))
-	for _, obj := range objects {
-		secret, ok := obj.(*corev1.Secret)
-		if !ok {
-			continue
-		}
-		secrets = append(secrets, secret)
+	if !exists {
+		return nil, fmt.Errorf("secret %s/%s not found", namespace, ref.Name)
 	}
-	return secrets, nil
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		return nil, fmt.Errorf("secret cache object %s/%s has unexpected type %T", namespace, ref.Name, obj)
+	}
+	value, ok := secret.Data[ref.Key]
+	if !ok {
+		return nil, fmt.Errorf("secret %s/%s has no key %q", namespace, ref.Name, ref.Key)
+	}
+	return value, nil
 }
 
 func (c *PolicyCache) acceptAccess(access *sshv1.Access) bool {
@@ -317,148 +227,6 @@ func gatewayClassName(access *sshv1.Access) string {
 	return *access.Spec.GatewayClassName
 }
 
-func (c *PolicyCache) acceptSecret(secret *corev1.Secret) bool {
-	if secret == nil {
-		return false
-	}
-	return c.namespace == "" || secret.Namespace == c.namespace
-}
-
-func addCredentialMatch(matches *[]*CredentialMatch, seen map[string]struct{}, access *sshv1.Access, credentialIndex int) {
-	if access == nil || credentialIndex < 0 || credentialIndex >= len(access.Spec.Credentials) {
-		return
-	}
-	credential := access.Spec.Credentials[credentialIndex]
-	key := accessKey(access.Namespace, access.Name) + "\x00" + credential.Username
-	if _, ok := seen[key]; ok {
-		return
-	}
-	seen[key] = struct{}{}
-	copied := access.DeepCopy()
-	*matches = append(*matches, &CredentialMatch{
-		Access:     copied,
-		Credential: &copied.Spec.Credentials[credentialIndex],
-	})
-}
-
-func indexAccessPasswords(obj any) ([]string, error) {
-	access, ok := obj.(*sshv1.Access)
-	if !ok || !isPodAccess(access) {
-		return nil, nil
-	}
-	values := map[string]struct{}{}
-	for _, credential := range access.Spec.Credentials {
-		for _, password := range credential.Passwords {
-			if password != "" {
-				values[password] = struct{}{}
-			}
-		}
-	}
-	return stringSetValues(values), nil
-}
-
-func indexAccessPublicKeys(obj any) ([]string, error) {
-	access, ok := obj.(*sshv1.Access)
-	if !ok || !isPodAccess(access) {
-		return nil, nil
-	}
-	values := map[string]struct{}{}
-	for _, credential := range access.Spec.Credentials {
-		for _, key := range credential.PublicKeys {
-			if fingerprint := keyFingerprint(key); fingerprint != "" {
-				values[fingerprint] = struct{}{}
-			}
-		}
-	}
-	return stringSetValues(values), nil
-}
-
-func indexAccessPasswordRefs(obj any) ([]string, error) {
-	access, ok := obj.(*sshv1.Access)
-	if !ok || !isPodAccess(access) {
-		return nil, nil
-	}
-	values := map[string]struct{}{}
-	for _, credential := range access.Spec.Credentials {
-		for _, ref := range credential.PasswordsFrom {
-			values[secretRefKey(access.Namespace, ref.Name, ref.Key)] = struct{}{}
-		}
-	}
-	return stringSetValues(values), nil
-}
-
-func indexAccessPublicKeyRefs(obj any) ([]string, error) {
-	access, ok := obj.(*sshv1.Access)
-	if !ok || !isPodAccess(access) {
-		return nil, nil
-	}
-	values := map[string]struct{}{}
-	for _, credential := range access.Spec.Credentials {
-		for _, ref := range credential.PublicKeysFrom {
-			values[secretRefKey(access.Namespace, ref.Name, ref.Key)] = struct{}{}
-		}
-	}
-	return stringSetValues(values), nil
-}
-
-func indexSecretPasswords(obj any) ([]string, error) {
-	secret, ok := obj.(*corev1.Secret)
-	if !ok {
-		return nil, nil
-	}
-	values := map[string]struct{}{}
-	for _, value := range secret.Data {
-		for _, password := range splitSecretLines(string(value)) {
-			values[password] = struct{}{}
-		}
-	}
-	return stringSetValues(values), nil
-}
-
-func indexSecretPublicKeys(obj any) ([]string, error) {
-	secret, ok := obj.(*corev1.Secret)
-	if !ok {
-		return nil, nil
-	}
-	values := map[string]struct{}{}
-	for _, value := range secret.Data {
-		for _, line := range splitSecretLines(string(value)) {
-			if fingerprint := keyFingerprint(line); fingerprint != "" {
-				values[fingerprint] = struct{}{}
-			}
-		}
-	}
-	return stringSetValues(values), nil
-}
-
-func secretKeysContainingPassword(secret *corev1.Secret, token string) []string {
-	keys := []string{}
-	for key, value := range secret.Data {
-		for _, password := range splitSecretLines(string(value)) {
-			if password == token {
-				keys = append(keys, key)
-				break
-			}
-		}
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func secretKeysContainingPublicKey(secret *corev1.Secret, fingerprint string) []string {
-	keys := []string{}
-	for key, value := range secret.Data {
-		for _, line := range splitSecretLines(string(value)) {
-			if keyFingerprint(line) == fingerprint {
-				keys = append(keys, key)
-				break
-			}
-		}
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func keyFingerprint(line string) string {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -471,10 +239,6 @@ func keyFingerprint(line string) string {
 	return cryptossh.FingerprintSHA256(pubkey)
 }
 
-func secretRefKey(namespace, name, key string) string {
-	return namespace + "/" + name + "/" + key
-}
-
 func splitSecretLines(value string) []string {
 	lines := strings.Split(value, "\n")
 	out := make([]string, 0, len(lines))
@@ -485,43 +249,4 @@ func splitSecretLines(value string) []string {
 		}
 	}
 	return out
-}
-
-func stringSetValues(values map[string]struct{}) []string {
-	out := make([]string, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func chooseMatch(kind string, matches []*CredentialMatch) (*CredentialMatch, error) {
-	if len(matches) == 0 {
-		return nil, authn.ErrNotProvided
-	}
-	if len(matches) > 1 {
-		chosen := matches[0]
-		slog.Warn("duplicate access credential material, using oldest access",
-			"kind", kind,
-			"access", accessKey(chosen.Access.Namespace, chosen.Access.Name),
-			"credential", chosen.Credential.Username,
-			"matches", len(matches),
-		)
-	}
-	return matches[0], nil
-}
-
-func sortMatches(matches []*CredentialMatch) {
-	sort.Slice(matches, func(i, j int) bool {
-		a := matches[i]
-		b := matches[j]
-		if accessLess(a.Access, b.Access) {
-			return true
-		}
-		if accessLess(b.Access, a.Access) {
-			return false
-		}
-		return a.Credential.Username < b.Credential.Username
-	})
 }

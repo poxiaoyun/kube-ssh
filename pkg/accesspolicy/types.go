@@ -2,11 +2,14 @@ package accesspolicy
 
 import (
 	"context"
+	"errors"
 
 	cryptossh "golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 )
+
+var ErrAccessNotFound = errors.New("access not found")
 
 type AccessGetter interface {
 	Get(ctx context.Context, namespace, name string) (*sshv1.Access, error)
@@ -18,8 +21,8 @@ type Store interface {
 }
 
 type CredentialMatcher interface {
-	MatchPassword(ctx context.Context, token string) (*CredentialMatch, error)
-	MatchPublicKey(ctx context.Context, pubkey cryptossh.PublicKey) (*CredentialMatch, error)
+	MatchPassword(ctx context.Context, sshUser, token string) (*CredentialMatch, error)
+	MatchPublicKey(ctx context.Context, sshUser string, pubkey cryptossh.PublicKey) (*CredentialMatch, error)
 }
 
 type PodLister interface {

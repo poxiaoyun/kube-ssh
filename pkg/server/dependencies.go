@@ -228,12 +228,6 @@ func buildAccessPolicyRuntime(opts *Options, kubeClient kubernetes.Interface, re
 	podInformer := kubeFactory.Core().V1().Pods()
 	secretInformer := kubeFactory.Core().V1().Secrets()
 
-	if err := accessInformer.Informer().AddIndexers(accesspolicy.AccessPolicyIndexers()); err != nil {
-		return accessPolicyRuntime{}, err
-	}
-	if err := secretInformer.Informer().AddIndexers(accesspolicy.SecretPolicyIndexers()); err != nil {
-		return accessPolicyRuntime{}, err
-	}
 	accessIndexer := accessInformer.Informer().GetIndexer()
 	podIndexer := podInformer.Informer().GetIndexer()
 	secretIndexer := secretInformer.Informer().GetIndexer()

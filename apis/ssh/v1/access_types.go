@@ -251,9 +251,10 @@ type SessionPolicy struct {
 //
 // A credential proves possession of authentication material and produces the
 // local user identity declared on the same entry. One credential entry maps to
-// exactly one user. Password tokens and public keys are expected to be unique
-// across visible Access objects; duplicate material is a configuration conflict
-// and should be resolved by creation-time fallback by the implementation.
+// exactly one user. Password tokens and public keys may be reused by different
+// Access objects because the SSH target identifies the Access before credentials
+// are checked. Within one Access, credential usernames must be unique and the
+// same material must not map to different credential identities.
 type AccessCredential struct {
 	// Username is the local username produced by this credential and the stable
 	// identifier for this credential entry.

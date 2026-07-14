@@ -68,7 +68,7 @@ func TestStaticPublicKeyAuthenticator(t *testing.T) {
 		t.Fatalf("NewStaticPublicKeyAuthenticator() error = %v", err)
 	}
 
-	info, err := authenticator.AuthenticatePublicKey(context.Background(), pubkey)
+	info, err := authenticator.AuthenticatePublicKey(context.Background(), "default.shell", pubkey)
 	if err != nil {
 		t.Fatalf("AuthenticatePublicKey() error = %v", err)
 	}
@@ -86,7 +86,7 @@ func TestStaticPublicKeyAuthenticator(t *testing.T) {
 	}
 
 	other := testPublicKey(t)
-	if _, err := authenticator.AuthenticatePublicKey(context.Background(), other); !errors.Is(err, ErrNotProvided) {
+	if _, err := authenticator.AuthenticatePublicKey(context.Background(), "default.shell", other); !errors.Is(err, ErrNotProvided) {
 		t.Fatalf("AuthenticatePublicKey() error = %v, want ErrNotProvided", err)
 	}
 	if _, err := authenticator.AuthenticateBasic(context.Background(), "alice", "password"); !errors.Is(err, ErrNotProvided) {

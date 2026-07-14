@@ -15,7 +15,7 @@ func (Anonymous) AuthenticateBasic(context.Context, string, string) (*Authentica
 	return anonymousInfo(), nil
 }
 
-func (Anonymous) AuthenticatePublicKey(context.Context, ssh.PublicKey) (*AuthenticateInfo, error) {
+func (Anonymous) AuthenticatePublicKey(context.Context, string, ssh.PublicKey) (*AuthenticateInfo, error) {
 	return anonymousInfo(), nil
 }
 

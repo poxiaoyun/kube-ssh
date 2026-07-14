@@ -62,9 +62,10 @@ func (a *WebhookAuthenticator) AuthenticateBasic(ctx context.Context, username, 
 	})
 }
 
-func (a *WebhookAuthenticator) AuthenticatePublicKey(ctx context.Context, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
+func (a *WebhookAuthenticator) AuthenticatePublicKey(ctx context.Context, username string, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
 	return a.authenticate(ctx, &WebhookAuthenticateRequest{
-		Type: WebhookCredentialPublicKey,
+		Type:    WebhookCredentialPublicKey,
+		SSHUser: username,
 		PublicKey: &WebhookPublicKeyCredential{
 			AuthorizedKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubkey))),
 			Fingerprint:   ssh.FingerprintSHA256(pubkey),

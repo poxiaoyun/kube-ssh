@@ -31,7 +31,7 @@ var _ = Describe("Access policy runtime", func() {
 			Passwords: []string{"inline-token"},
 		})
 
-		EventuallyBasicAuth(runtime, "inline-token").Should(SucceedWithUser("alice"))
+		EventuallyBasicAuth(runtime, envtestSSHUser(ns, "inline-password"), "inline-token").Should(SucceedWithUser("alice"))
 	})
 
 	It("authenticates password secret refs from Secret and Access informer caches", func() {
@@ -45,7 +45,7 @@ var _ = Describe("Access policy runtime", func() {
 			PasswordsFrom: []v1.LocalSecretKeyRef{{Name: "access-secret", Key: "passwords"}},
 		})
 
-		EventuallyBasicAuth(runtime, "secret-token").Should(SucceedWithUser("alice"))
+		EventuallyBasicAuth(runtime, envtestSSHUser(ns, "secret-password"), "secret-token").Should(SucceedWithUser("alice"))
 	})
 
 	It("requires a Secret key to be referenced by Access", func() {
@@ -59,7 +59,7 @@ var _ = Describe("Access policy runtime", func() {
 			PasswordsFrom: []v1.LocalSecretKeyRef{{Name: "access-secret", Key: "passwords"}},
 		})
 
-		ConsistentlyBasicAuth(runtime, "unreferenced-token").Should(FailWithAuthError(authn.ErrNotProvided))
+		ConsistentlyBasicAuth(runtime, envtestSSHUser(ns, "secret-password"), "unreferenced-token").Should(FailAuthentication())
 	})
 
 	It("refreshes password matches when a Secret changes", func() {
@@ -74,14 +74,15 @@ var _ = Describe("Access policy runtime", func() {
 		createEnvtestAccess(ns, "secret-password", "alice", v1.Credential{
 			PasswordsFrom: []v1.LocalSecretKeyRef{{Name: "access-secret", Key: "passwords"}},
 		})
-		EventuallyBasicAuth(runtime, tokenA).Should(SucceedWithUser("alice"))
+		sshUser := envtestSSHUser(ns, "secret-password")
+		EventuallyBasicAuth(runtime, sshUser, tokenA).Should(SucceedWithUser("alice"))
 
 		updateEnvtestSecret(ns, "access-secret", map[string]string{
 			"passwords": tokenB,
 		})
 
-		EventuallyBasicAuth(runtime, tokenA).Should(FailWithAuthError(authn.ErrNotProvided))
-		EventuallyBasicAuth(runtime, tokenB).Should(SucceedWithUser("alice"))
+		EventuallyBasicAuth(runtime, sshUser, tokenA).Should(FailWithAuthError(authn.ErrNotProvided))
+		EventuallyBasicAuth(runtime, sshUser, tokenB).Should(SucceedWithUser("alice"))
 	})
 
 	It("refreshes password matches when an Access changes", func() {
@@ -93,14 +94,15 @@ var _ = Describe("Access policy runtime", func() {
 		createEnvtestAccess(ns, "inline-password", "alice", v1.Credential{
 			Passwords: []string{tokenA},
 		})
-		EventuallyBasicAuth(runtime, tokenA).Should(SucceedWithUser("alice"))
+		sshUser := envtestSSHUser(ns, "inline-password")
+		EventuallyBasicAuth(runtime, sshUser, tokenA).Should(SucceedWithUser("alice"))
 
 		updateEnvtestAccessCredential(ns, "inline-password", v1.Credential{
 			Passwords: []string{tokenB},
 		})
 
-		EventuallyBasicAuth(runtime, tokenA).Should(FailWithAuthError(authn.ErrNotProvided))
-		EventuallyBasicAuth(runtime, tokenB).Should(SucceedWithUser("alice"))
+		EventuallyBasicAuth(runtime, sshUser, tokenA).Should(FailWithAuthError(authn.ErrNotProvided))
+		EventuallyBasicAuth(runtime, sshUser, tokenB).Should(SucceedWithUser("alice"))
 	})
 
 	It("stops authenticating after an Access is deleted", func() {
@@ -110,10 +112,11 @@ var _ = Describe("Access policy runtime", func() {
 		createEnvtestAccess(ns, "inline-password", "alice", v1.Credential{
 			Passwords: []string{"deleted-access-token"},
 		})
-		EventuallyBasicAuth(runtime, "deleted-access-token").Should(SucceedWithUser("alice"))
+		sshUser := envtestSSHUser(ns, "inline-password")
+		EventuallyBasicAuth(runtime, sshUser, "deleted-access-token").Should(SucceedWithUser("alice"))
 
 		Expect(envtestAccessClient.SshV1().Accesses(ns).Delete(context.Background(), "inline-password", metav1.DeleteOptions{})).To(Succeed())
-		EventuallyBasicAuth(runtime, "deleted-access-token").Should(FailWithAuthError(authn.ErrNotProvided))
+		EventuallyBasicAuth(runtime, sshUser, "deleted-access-token").Should(FailWithAuthError(authn.ErrNotProvided))
 	})
 
 	It("stops authenticating after a referenced Secret is deleted", func() {
@@ -126,10 +129,11 @@ var _ = Describe("Access policy runtime", func() {
 		createEnvtestAccess(ns, "secret-password", "alice", v1.Credential{
 			PasswordsFrom: []v1.LocalSecretKeyRef{{Name: "access-secret", Key: "passwords"}},
 		})
-		EventuallyBasicAuth(runtime, "deleted-secret-token").Should(SucceedWithUser("alice"))
+		sshUser := envtestSSHUser(ns, "secret-password")
+		EventuallyBasicAuth(runtime, sshUser, "deleted-secret-token").Should(SucceedWithUser("alice"))
 
 		Expect(envtestKubeClient.CoreV1().Secrets(ns).Delete(context.Background(), "access-secret", metav1.DeleteOptions{})).To(Succeed())
-		EventuallyBasicAuth(runtime, "deleted-secret-token").Should(FailWithAuthError(authn.ErrNotProvided))
+		EventuallyBasicAuth(runtime, sshUser, "deleted-secret-token").Should(FailAuthentication())
 	})
 
 	It("honors configured namespace scope", func() {
@@ -144,8 +148,8 @@ var _ = Describe("Access policy runtime", func() {
 			Passwords: []string{"other-token"},
 		})
 
-		EventuallyBasicAuth(runtime, "allowed-token").Should(SucceedWithUser("alice"))
-		ConsistentlyBasicAuth(runtime, "other-token").Should(FailWithAuthError(authn.ErrNotProvided))
+		EventuallyBasicAuth(runtime, envtestSSHUser(allowedNS, "inline-password"), "allowed-token").Should(SucceedWithUser("alice"))
+		ConsistentlyBasicAuth(runtime, envtestSSHUser(otherNS, "inline-password"), "other-token").Should(FailWithAuthError(authn.ErrNotProvided))
 	})
 
 	It("authenticates public key secret refs from informer caches", func() {
@@ -161,7 +165,7 @@ var _ = Describe("Access policy runtime", func() {
 			PublicKeysFrom: []v1.LocalSecretKeyRef{{Name: "access-secret", Key: "keys"}},
 		})
 
-		EventuallyPublicKeyAuth(runtime, pubkey).Should(SucceedWithUser("alice"))
+		EventuallyPublicKeyAuth(runtime, envtestSSHUser(ns, "secret-key"), pubkey).Should(SucceedWithUser("alice"))
 	})
 
 	It("updates Access status from informer caches", func() {
@@ -195,8 +199,8 @@ var _ = Describe("Access policy runtime", func() {
 		Expect(err).NotTo(HaveOccurred())
 		createEnvtestAccess(ns, "classless-access", "bob", v1.Credential{Passwords: []string{"classless-token"}})
 
-		EventuallyBasicAuth(runtime, "public-token").Should(SucceedWithUser("alice"))
-		ConsistentlyBasicAuth(runtime, "classless-token").Should(FailWithAuthError(authn.ErrNotProvided))
+		EventuallyBasicAuth(runtime, envtestSSHUser(ns, "public-access"), "public-token").Should(SucceedWithUser("alice"))
+		ConsistentlyBasicAuth(runtime, envtestSSHUser(ns, "classless-access"), "classless-token").Should(FailWithAuthError(authn.ErrNotProvided))
 
 		Eventually(func(g Gomega) {
 			access, err := envtestAccessClient.SshV1().Accesses(ns).Get(context.Background(), "public-access", metav1.GetOptions{})
@@ -472,26 +476,26 @@ func envtestSecretData(data map[string]string) map[string][]byte {
 	return out
 }
 
-func EventuallyBasicAuth(runtime accessPolicyRuntime, token string) AsyncAssertion {
+func EventuallyBasicAuth(runtime accessPolicyRuntime, sshUser, token string) AsyncAssertion {
 	GinkgoHelper()
 	return Eventually(func() *authResult {
-		info, err := runtime.authenticator.AuthenticateBasic(context.Background(), "ignored", token)
+		info, err := runtime.authenticator.AuthenticateBasic(context.Background(), sshUser, token)
 		return &authResult{username: userName(info), err: err}
 	}, 10*time.Second, 100*time.Millisecond)
 }
 
-func ConsistentlyBasicAuth(runtime accessPolicyRuntime, token string) AsyncAssertion {
+func ConsistentlyBasicAuth(runtime accessPolicyRuntime, sshUser, token string) AsyncAssertion {
 	GinkgoHelper()
 	return Consistently(func() *authResult {
-		info, err := runtime.authenticator.AuthenticateBasic(context.Background(), "ignored", token)
+		info, err := runtime.authenticator.AuthenticateBasic(context.Background(), sshUser, token)
 		return &authResult{username: userName(info), err: err}
 	}, time.Second, 100*time.Millisecond)
 }
 
-func EventuallyPublicKeyAuth(runtime accessPolicyRuntime, pubkey cryptossh.PublicKey) AsyncAssertion {
+func EventuallyPublicKeyAuth(runtime accessPolicyRuntime, sshUser string, pubkey cryptossh.PublicKey) AsyncAssertion {
 	GinkgoHelper()
 	return Eventually(func() *authResult {
-		info, err := runtime.authenticator.AuthenticatePublicKey(context.Background(), pubkey)
+		info, err := runtime.authenticator.AuthenticatePublicKey(context.Background(), sshUser, pubkey)
 		return &authResult{username: userName(info), err: err}
 	}, 10*time.Second, 100*time.Millisecond)
 }
@@ -514,6 +518,16 @@ func FailWithAuthError(expected error) OmegaMatcher {
 	return WithTransform(func(result *authResult) error {
 		return result.err
 	}, MatchError(expected))
+}
+
+func FailAuthentication() OmegaMatcher {
+	return WithTransform(func(result *authResult) error {
+		return result.err
+	}, HaveOccurred())
+}
+
+func envtestSSHUser(namespace, access string) string {
+	return namespace + "." + access
 }
 
 func userName(info *authn.AuthenticateInfo) string {

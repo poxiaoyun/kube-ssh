@@ -43,7 +43,7 @@ func (s *MemoryStore) Get(_ context.Context, namespace, name string) (*sshv1.Acc
 	defer s.mu.RUnlock()
 	access := s.entries[accessKey(namespace, name)]
 	if access == nil {
-		return nil, fmt.Errorf("access %s/%s not found", namespace, name)
+		return nil, fmt.Errorf("%w: %s/%s", ErrAccessNotFound, namespace, name)
 	}
 	return access.DeepCopy(), nil
 }

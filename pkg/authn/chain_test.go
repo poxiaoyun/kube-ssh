@@ -19,7 +19,7 @@ func (a testAuthenticator) AuthenticateBasic(context.Context, string, string) (*
 	return a.info, a.err
 }
 
-func (a testAuthenticator) AuthenticatePublicKey(context.Context, ssh.PublicKey) (*AuthenticateInfo, error) {
+func (a testAuthenticator) AuthenticatePublicKey(context.Context, string, ssh.PublicKey) (*AuthenticateInfo, error) {
 	return a.info, a.err
 }
 

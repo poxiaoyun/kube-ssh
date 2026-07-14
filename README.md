@@ -281,10 +281,10 @@ Each status endpoint contains the advertised `address` and the Access target
 base `username`. Append `~pod` or `~pod.container` when an explicit Pod is
 needed.
 
-> User identity is derived from the matching public key or password token, not
-> from the SSH username. Credential values are expected to be unique. For a
-> duplicate, kube-ssh deterministically uses the oldest Access and logs a
-> warning; operators should still resolve the conflict.
+> The SSH username first identifies the target Access. User identity is then
+> derived from a matching public key or password token in that Access. The same
+> credential material may therefore be reused by different Access objects, but
+> it must not map to multiple credential identities within one Access.
 >
 > Public key authentication is recommended. Password authentication treats the
 > password as an opaque bearer token and is not recommended.

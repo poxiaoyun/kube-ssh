@@ -285,12 +285,26 @@ func (c *AccessStatusController) validateAccess(access *sshv1.Access) (metav1.Co
 	if len(access.Spec.Credentials) == 0 {
 		return metav1.ConditionFalse, "NoCredentials", "Access requires at least one credential entry."
 	}
+	usernames := make(map[string]struct{}, len(access.Spec.Credentials))
+	passwordOwners := make(map[string]string)
+	publicKeyOwners := make(map[string]string)
 	for i, credential := range access.Spec.Credentials {
 		if strings.TrimSpace(credential.Username) == "" {
 			return metav1.ConditionFalse, "InvalidCredential", fmt.Sprintf("Credential at index %d requires username.", i)
 		}
-		if ok, reason, message := c.validateCredential(access.Namespace, i, credential); !ok {
+		if _, exists := usernames[credential.Username]; exists {
+			return metav1.ConditionFalse, "DuplicateCredentialIdentity", fmt.Sprintf("Credential username %q must be unique within the Access.", credential.Username)
+		}
+		usernames[credential.Username] = struct{}{}
+		material, ok, reason, message := c.validateCredential(access.Namespace, i, credential)
+		if !ok {
 			return metav1.ConditionFalse, reason, message
+		}
+		if first, second, duplicate := duplicateMaterialOwner(passwordOwners, material.passwords, credential.Username); duplicate {
+			return metav1.ConditionFalse, "DuplicateCredentialMaterial", fmt.Sprintf("Password material is assigned to credential identities %q and %q within the Access.", first, second)
+		}
+		if first, second, duplicate := duplicateMaterialOwner(publicKeyOwners, material.publicKeys, credential.Username); duplicate {
+			return metav1.ConditionFalse, "DuplicateCredentialMaterial", fmt.Sprintf("Public key material is assigned to credential identities %q and %q within the Access.", first, second)
 		}
 		if ok, message := validateCapabilityPolicy(credential.Capabilities); !ok {
 			return metav1.ConditionFalse, "InvalidCapabilityPolicy", fmt.Sprintf("Credential %q: %s", credential.Username, message)
@@ -335,64 +349,78 @@ func validForwardExpression(expression string) bool {
 	return err == nil && host != "" && port != ""
 }
 
-func (c *AccessStatusController) validateCredential(namespace string, index int, credential sshv1.AccessCredential) (bool, string, string) {
+type credentialMaterial struct {
+	passwords  map[string]struct{}
+	publicKeys map[string]struct{}
+}
+
+func (c *AccessStatusController) validateCredential(namespace string, index int, credential sshv1.AccessCredential) (credentialMaterial, bool, string, string) {
+	material := credentialMaterial{
+		passwords:  make(map[string]struct{}),
+		publicKeys: make(map[string]struct{}),
+	}
 	hasMaterial := false
 	for _, password := range credential.Passwords {
 		hasMaterial = true
 		if password == "" {
-			return false, "InvalidCredential", fmt.Sprintf("Credential %q has an empty password token.", credential.Username)
+			return material, false, "InvalidCredential", fmt.Sprintf("Credential %q has an empty password token.", credential.Username)
 		}
+		material.passwords[password] = struct{}{}
 	}
 	for _, key := range credential.PublicKeys {
 		hasMaterial = true
-		if keyFingerprint(key) == "" {
-			return false, "InvalidCredential", fmt.Sprintf("Credential %q has an invalid public key.", credential.Username)
+		fingerprint := keyFingerprint(key)
+		if fingerprint == "" {
+			return material, false, "InvalidCredential", fmt.Sprintf("Credential %q has an invalid public key.", credential.Username)
 		}
+		material.publicKeys[fingerprint] = struct{}{}
 	}
 	for _, ref := range credential.PasswordsFrom {
 		hasMaterial = true
-		if ok, reason, message := c.validatePasswordSecretRef(namespace, credential.Username, ref); !ok {
-			return false, reason, message
+		value, ok, reason, message := c.secretValue(namespace, credential.Username, ref)
+		if !ok {
+			return material, false, reason, message
+		}
+		tokens := splitSecretLines(string(value))
+		if len(tokens) == 0 {
+			return material, false, "InvalidSecretRef", fmt.Sprintf("Credential %q password secret %s/%s key %q contains no tokens.", credential.Username, namespace, ref.Name, ref.Key)
+		}
+		for _, token := range tokens {
+			material.passwords[token] = struct{}{}
 		}
 	}
 	for _, ref := range credential.PublicKeysFrom {
 		hasMaterial = true
-		if ok, reason, message := c.validatePublicKeySecretRef(namespace, credential.Username, ref); !ok {
-			return false, reason, message
+		value, ok, reason, message := c.secretValue(namespace, credential.Username, ref)
+		if !ok {
+			return material, false, reason, message
+		}
+		lines := splitSecretLines(string(value))
+		if len(lines) == 0 {
+			return material, false, "InvalidSecretRef", fmt.Sprintf("Credential %q public key secret %s/%s key %q contains no keys.", credential.Username, namespace, ref.Name, ref.Key)
+		}
+		for _, line := range lines {
+			fingerprint := keyFingerprint(line)
+			if fingerprint == "" {
+				return material, false, "InvalidSecretRef", fmt.Sprintf("Credential %q public key secret %s/%s key %q contains an invalid public key.", credential.Username, namespace, ref.Name, ref.Key)
+			}
+			material.publicKeys[fingerprint] = struct{}{}
 		}
 	}
 	if !hasMaterial {
-		return false, "InvalidCredential", fmt.Sprintf("Credential %d/%q has no password or public key material.", index, credential.Username)
+		return material, false, "InvalidCredential", fmt.Sprintf("Credential %d/%q has no password or public key material.", index, credential.Username)
 	}
-	return true, "", ""
+	return material, true, "", ""
 }
 
-func (c *AccessStatusController) validatePasswordSecretRef(namespace, username string, ref sshv1.LocalSecretKeyRef) (bool, string, string) {
-	value, ok, reason, message := c.secretValue(namespace, username, ref)
-	if !ok {
-		return false, reason, message
-	}
-	if len(splitSecretLines(string(value))) == 0 {
-		return false, "InvalidSecretRef", fmt.Sprintf("Credential %q password secret %s/%s key %q contains no tokens.", username, namespace, ref.Name, ref.Key)
-	}
-	return true, "", ""
-}
-
-func (c *AccessStatusController) validatePublicKeySecretRef(namespace, username string, ref sshv1.LocalSecretKeyRef) (bool, string, string) {
-	value, ok, reason, message := c.secretValue(namespace, username, ref)
-	if !ok {
-		return false, reason, message
-	}
-	lines := splitSecretLines(string(value))
-	if len(lines) == 0 {
-		return false, "InvalidSecretRef", fmt.Sprintf("Credential %q public key secret %s/%s key %q contains no keys.", username, namespace, ref.Name, ref.Key)
-	}
-	for _, line := range lines {
-		if keyFingerprint(line) == "" {
-			return false, "InvalidSecretRef", fmt.Sprintf("Credential %q public key secret %s/%s key %q contains an invalid public key.", username, namespace, ref.Name, ref.Key)
+func duplicateMaterialOwner(owners map[string]string, values map[string]struct{}, username string) (string, string, bool) {
+	for value := range values {
+		if owner, exists := owners[value]; exists && owner != username {
+			return owner, username, true
 		}
+		owners[value] = username
 	}
-	return true, "", ""
+	return "", "", false
 }
 
 func (c *AccessStatusController) secretValue(namespace, username string, ref sshv1.LocalSecretKeyRef) ([]byte, bool, string, string) {

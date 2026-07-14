@@ -407,7 +407,7 @@ Authenticate(ctx, request) -> identity, result
 
 没有外部认证源时，CRD `Access` 可以在每条 credential 上直接声明本地用户信息：`spec.credentials[].username` 是这个 credential 验证成功后产出的本地用户名，`uid`、`groups`、`extra` 是该用户的附加属性。一个 key/password credential entry 只能映射到一个用户；如果多个用户使用相同 secret，也必须声明成多条 credential entry，由每条 entry 明确自己的本地用户名。
 
-CRD token/public key 认证默认假设 token（通过 SSH password method 提交）和 public key 在所有可见 `Access` 中是唯一的。运行时应按凭据材料建立索引并优先使用唯一命中；如果同一凭据材料匹配多个 `Access` 或多个 credential entry，这是配置冲突，但为了运行时可用性，按 `Access.metadata.creationTimestamp` 最早者做稳定 fallback，再按 namespace/name/credential 顺序打破并列。实现应在状态或日志中暴露重复凭据告警。
+CRD token/public key 认证先从 SSH username 精确解析目标 `Access`，再只在该 `Access` 的 `spec.credentials` 中匹配凭据。因此不同 `Access` 可以复用相同 token 或 public key，不存在跨 `Access` 的回退或优先级。同一 `Access` 内，credential username 必须唯一，且相同凭据材料不能映射到不同身份；这类配置冲突必须认证失败，并通过 Access status 暴露。
 
 ### 授权
 

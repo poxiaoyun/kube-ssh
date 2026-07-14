@@ -59,6 +59,79 @@ spec:
 	}
 }
 
+func TestAccessCRDSharedPublicKeyIsScopedByTarget(t *testing.T) {
+	signer, authorizedKey := newTestSigner(t)
+	f := NewFrameworkWithOptions(t, FrameworkOptions{
+		GatewayArgs: []string{
+			"--access-policy-enabled",
+			"--authorization-allow-all",
+		},
+		BeforeStart: func(f *Framework) {
+			f.InstallAccessCRD()
+			f.ApplyManifest(fmt.Sprintf(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shell-second
+  namespace: %[1]s
+  labels:
+    app: shell-second
+spec:
+  containers:
+  - name: app
+    image: alpine:3.20
+    command: ["sh", "-c", "sleep infinity"]
+---
+apiVersion: ssh.xiaoshiai.cn/v1
+kind: Access
+metadata:
+  name: shell-first
+  namespace: %[1]s
+spec:
+  selector:
+    app: shell
+  credentials:
+  - username: alice
+    publicKeys:
+    - %[2]q
+---
+apiVersion: ssh.xiaoshiai.cn/v1
+kind: Access
+metadata:
+  name: shell-second
+  namespace: %[1]s
+spec:
+  selector:
+    app: shell-second
+  credentials:
+  - username: bob
+    publicKeys:
+    - %[2]q
+`, f.Namespace, authorizedKey))
+			f.WaitPodReady("shell-second", 60*time.Second)
+		},
+	})
+	f.WaitAccessReady("shell-first", 30*time.Second)
+	f.WaitAccessReady("shell-second", 30*time.Second)
+
+	for _, tc := range []struct {
+		access string
+		want   string
+	}{
+		{access: "shell-first", want: "shell"},
+		{access: "shell-second", want: "shell-second"},
+	} {
+		user := f.Namespace + "." + tc.access
+		output, err := f.SSHClientExec(user, cryptossh.PublicKeys(signer), "hostname")
+		if err != nil {
+			t.Fatalf("shared-key access through %s failed: %v\n%s", tc.access, err, output)
+		}
+		if output != tc.want+"\n" {
+			t.Fatalf("shared-key access through %s output = %q, want %q", tc.access, output, tc.want+"\n")
+		}
+	}
+}
+
 func TestAccessExplicitStatefulSetPod(t *testing.T) {
 	signer, authorizedKey := newTestSigner(t)
 	f := NewFrameworkWithOptions(t, FrameworkOptions{

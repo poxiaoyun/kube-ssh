@@ -104,7 +104,7 @@ func (a accessPolicyTestAuthenticator) AuthenticateBasic(context.Context, string
 	return nil, a.err
 }
 
-func (a accessPolicyTestAuthenticator) AuthenticatePublicKey(context.Context, cryptossh.PublicKey) (*authn.AuthenticateInfo, error) {
+func (a accessPolicyTestAuthenticator) AuthenticatePublicKey(context.Context, string, cryptossh.PublicKey) (*authn.AuthenticateInfo, error) {
 	return nil, a.err
 }
 

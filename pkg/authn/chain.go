@@ -36,9 +36,9 @@ func (c *Chain) AuthenticateBasic(ctx context.Context, username, password string
 	return nil, ErrNotProvided
 }
 
-func (c *Chain) AuthenticatePublicKey(ctx context.Context, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
+func (c *Chain) AuthenticatePublicKey(ctx context.Context, username string, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
 	for _, authenticator := range c.authenticators {
-		info, err := authenticator.AuthenticatePublicKey(ctx, pubkey)
+		info, err := authenticator.AuthenticatePublicKey(ctx, username, pubkey)
 		if err == nil {
 			return info, nil
 		}

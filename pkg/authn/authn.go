@@ -100,7 +100,8 @@ type SSHAuthenticator interface {
 	// Implementations should derive identity from the authenticated credential or
 	// an external identity provider, not from username structure.
 	AuthenticateBasic(ctx context.Context, username, password string) (*AuthenticateInfo, error)
-	// AuthenticatePublicKey validates a public key. Implementations may return
-	// TargetHints tied to the key, but must not perform operation authorization.
-	AuthenticatePublicKey(ctx context.Context, pubkey ssh.PublicKey) (*AuthenticateInfo, error)
+	// AuthenticatePublicKey validates a public key presented for the SSH
+	// username. Implementations may use username to select an authentication
+	// realm, but must derive identity from the key rather than the username.
+	AuthenticatePublicKey(ctx context.Context, username string, pubkey ssh.PublicKey) (*AuthenticateInfo, error)
 }
