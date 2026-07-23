@@ -1,6 +1,7 @@
 package kube
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/status"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
@@ -15,6 +16,10 @@ const (
 	OptionPods = "pods"
 	// OptionContainers is the Kubernetes container target option key.
 	OptionContainers = "containers"
+
+	RuntimePodUID   = "kube.podUID"
+	RuntimeNodeName = "kube.nodeName"
+	RuntimeHostIP   = "kube.hostIP"
 )
 
 func NewTarget(namespace, pod, container string) *target.Target {
@@ -26,6 +31,18 @@ func NewTarget(namespace, pod, container string) *target.Target {
 		options = append(options, target.KeyValue{Key: OptionContainers, Value: container})
 	}
 	return &target.Target{Kind: KindTarget, Options: options}
+}
+
+// NewTargetForPod binds the external target name to a specific Pod instance.
+func NewTargetForPod(pod *corev1.Pod, container string) *target.Target {
+	if pod == nil {
+		return nil
+	}
+	tgt := NewTarget(pod.Namespace, pod.Name, container)
+	target.WithRuntimeValue(tgt, RuntimePodUID, string(pod.UID))
+	target.WithRuntimeValue(tgt, RuntimeNodeName, pod.Spec.NodeName)
+	target.WithRuntimeValue(tgt, RuntimeHostIP, pod.Status.HostIP)
+	return tgt
 }
 
 type PodTarget struct {

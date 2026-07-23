@@ -23,12 +23,6 @@ type helperSession struct {
 
 func (b *Backend) startHelperSession(ctx context.Context, tgt *target.Target, capability string) (*helperSession, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	helper, err := b.acquireHelper(ctx, tgt, capability)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderr := &lockedBuffer{}
@@ -36,14 +30,8 @@ func (b *Backend) startHelperSession(ctx context.Context, tgt *target.Target, ca
 
 	go func() {
 		defer stdoutWriter.Close()
-		defer func() { _ = helper.Release(context.WithoutCancel(ctx)) }()
-		exitCode, err := b.exec(ctx, backend.ExecRequest{
-			Target:  tgt,
-			Command: helper.Command(helperpkg.CommandServe),
-			Stdin:   stdinReader,
-			Stdout:  stdoutWriter,
-			Stderr:  stderr,
-			TTY:     false,
+		exitCode, err := b.execHelper(ctx, tgt, capability, []string{helperpkg.CommandServe}, backend.StreamRequest{
+			Target: tgt, Stdin: stdinReader, Stdout: stdoutWriter, Stderr: stderr,
 		})
 		_ = stdinReader.Close()
 		switch {

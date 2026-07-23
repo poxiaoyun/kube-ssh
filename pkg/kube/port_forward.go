@@ -28,6 +28,9 @@ func (b *Backend) PortForward(ctx context.Context, req backend.PortForwardReques
 }
 
 func (b *Backend) forwardPodPort(ctx context.Context, req backend.PortForwardRequest) (ioproxy.HalfCloser, error) {
+	if b.portForwardOverride != nil {
+		return b.portForwardOverride(ctx, req)
+	}
 	if req.Port == 0 || req.Port > 65535 {
 		return nil, status.InvalidTarget("invalid port %d", req.Port)
 	}
@@ -102,11 +105,6 @@ func (b *Backend) dialThroughHelper(ctx context.Context, req backend.PortForward
 	if req.Port == 0 || req.Port > 65535 {
 		return nil, status.InvalidTarget("invalid port %d", req.Port)
 	}
-	helper, err := b.acquireHelper(ctx, req.Target, helperpkg.CapabilityDial)
-	if err != nil {
-		return nil, err
-	}
-
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderr := &lockedBuffer{}
@@ -120,19 +118,12 @@ func (b *Backend) dialThroughHelper(ctx context.Context, req backend.PortForward
 
 	go func() {
 		defer stdoutWriter.Close()
-		defer func() { _ = helper.Release(context.WithoutCancel(ctx)) }()
-		exitCode, err := b.exec(ctx, backend.ExecRequest{
-			Target: req.Target,
-			Command: helper.Command(
+		exitCode, err := b.execHelper(ctx, req.Target, helperpkg.CapabilityDial,
+			[]string{
 				helperpkg.CapabilityDial,
 				"--host", req.Host,
 				"--port", strconv.FormatUint(uint64(req.Port), 10),
-			),
-			Stdin:  stdinReader,
-			Stdout: stdoutWriter,
-			Stderr: stderr,
-			TTY:    false,
-		})
+			}, backend.StreamRequest{Target: req.Target, Stdin: stdinReader, Stdout: stdoutWriter, Stderr: stderr})
 		_ = stdinReader.Close()
 		if err != nil {
 			result.complete(err)

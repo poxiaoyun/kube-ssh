@@ -55,6 +55,10 @@ running `sshd` in workload containers.
 +------------------------------------------------------------------------+
 ```
 
+This diagram shows the default `kubernetes` backend. The optional `node`
+backend keeps the gateway control plane but replaces the API-server streaming
+path with a direct node-local CRI path.
+
 ## Features
 
 - Access any Pod/container with standard OpenSSH clients, without application
@@ -88,15 +92,15 @@ probes instead.
 | SSH feature                                                                | kube-ssh                                                |
 | -------------------------------------------------------------------------- | ------------------------------------------------------- |
 | Public key and password authentication                                     | Supported through configured authentication providers   |
-| Interactive shell (`session` / `shell`)                                    | Kubernetes `pods/exec` with PTY                         |
-| Command execution (`session` / `exec`)                                     | Kubernetes `pods/exec`                                  |
-| Terminal signals                                                           | Kubernetes `pods/exec` with PTY                         |
-| PTY and resize (`pty-req` / `window-change`)                               | Kubernetes `pods/exec`                                  |
-| Exit status (`exit-status`)                                                | Kubernetes `pods/exec` exit code                        |
+| Interactive shell (`session` / `shell`)                                    | Selected backend exec transport with PTY                |
+| Command execution (`session` / `exec`)                                     | Selected backend exec transport                         |
+| Terminal signals                                                           | Selected backend exec transport with PTY                |
+| PTY and resize (`pty-req` / `window-change`)                               | Selected backend exec transport                         |
+| Exit status (`exit-status`)                                                | Selected backend exec exit code                         |
 | Environment variables (`env`)                                              | Supported with global and per-Access allowlists         |
 | SFTP (`session` / `subsystem: sftp`)                                       | `kube-ssh-helper`                                       |
 | Legacy SCP (`session` / `exec`)                                            | Compatibility only via `kube-ssh-helper`; prefer SFTP   |
-| Pod-local port forwarding (`direct-tcpip` to localhost/loopback)           | Kubernetes `pods/portforward`                           |
+| Pod-local port forwarding (`direct-tcpip` to localhost/loopback)           | Selected backend port-forward transport                 |
 | Network port forwarding (`direct-tcpip` to a hostname/IP)                  | Dialed from the target container by `kube-ssh-helper`   |
 | Dynamic forwarding / SOCKS (`direct-tcpip`)                                | OpenSSH client SOCKS over local forwarding              |
 | Remote port forwarding (`tcpip-forward` / `forwarded-tcpip`)               | Listener through `kube-ssh-helper`                      |
@@ -104,6 +108,100 @@ probes instead.
 | X11 forwarding (`x11-req` / `x11`)                                         | Planned                                                 |
 | Session recording                                                          | Planned                                                 |
 | `ssh-copy-id` / `authorized_keys` enrollment                               | Not supported; credentials are managed through `Access` |
+
+The table describes the SSH capabilities exposed to clients. In `node` mode,
+CRI exec/port-forward replaces the corresponding API-server transport, while
+`kube-ssh-helper` continues to provide the application-layer capabilities.
+
+## Backend modes
+
+The backend mode selects how an already authenticated and authorized SSH
+operation reaches its target container. It is fixed when the gateway starts;
+operations never switch modes or fall back to another backend.
+
+| Mode         | Stream data path                                                    | Kubernetes API server role                                      | Additional requirements                                      | Intended use                                      |
+| ------------ | ------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------- |
+| `kubernetes` | Gateway → `pods/exec` or `pods/portforward` → container             | Control plane and all SSH stream data                           | Gateway RBAC for `pods/exec` and `pods/portforward`           | Default, simplest deployment                      |
+| `node`       | Gateway → node HostIP over mTLS → `kube-ssh-node` → CRI → container | Pod/policy/Secret watch, target lookup, SAR, and other control traffic only | Node DaemonSet, CRI socket access, mTLS PKI, node reachability | High-volume SSH sessions that should bypass the API server |
+
+Both modes support the same SSH protocol capabilities. The difference is the
+transport layer:
+
+- In `kubernetes` mode, the gateway injects and starts `kube-ssh-helper`
+  through `pods/exec`.
+- In `node` mode, `kube-ssh-node` injects and starts the helper through CRI.
+- The helper is still responsible for SFTP, legacy SCP, non-loopback dialing,
+  remote forwarding, and agent forwarding; it is not the reason traffic
+  traverses the API server.
+
+Select the mode with one of the following equivalent settings:
+
+| Configuration surface | Setting                                      |
+| --------------------- | -------------------------------------------- |
+| Helm                  | `kubeSsh.backend.mode=kubernetes` or `node`   |
+| Command line          | `--backend-mode=kubernetes` or `node`         |
+| Environment           | `BACKEND_MODE=kubernetes` or `node`           |
+
+`kubernetes` is the default. When Helm selects `node`, the chart also deploys
+the `kube-ssh-node` DaemonSet, mounts the configured CRI socket and mTLS
+Secret, and omits `pods/exec` and `pods/portforward` from the gateway
+ClusterRole. A manually configured gateway also needs `--node-port`,
+`--node-server-name`, `--node-ca-file`, `--node-cert-file`, and
+`--node-key-file`.
+
+## Node data plane
+
+The `node` backend deploys one `kube-ssh-node` per Linux node and uses this
+path:
+
+```text
+OpenSSH client -> kube-ssh gateway -> node HostIP:10443 -> CRI v1 streaming -> container
+                                      (mutual TLS)
+
+Kubernetes API server <- Pod watch/get, Access policy, Secret watch, SAR only
+```
+
+The gateway still performs authentication, target selection, authorization,
+auditing, and policy enforcement. It binds the selected target to the Pod UID
+and node for the lifetime of the SSH connection. `kube-ssh-node` resolves that
+exact UID through CRI and rejects missing or ambiguous sandboxes. Node mode is
+strict: a missing/unhealthy node data plane or CRI stream fails the operation
+and never falls back to `pods/exec` or `pods/portforward`.
+
+The helper remains the application-layer implementation for SFTP, legacy SCP,
+non-loopback dialing, remote forwarding, and SSH agent forwarding. The node
+component injects the same-architecture helper from its own image through CRI,
+so helper traffic no longer traverses the API server. Target images must
+provide either `sh` plus `cat`, or `tar`, for helper injection, matching the
+existing helper requirement.
+
+Enable the Node backend with Helm:
+
+```bash
+helm upgrade --install kube-ssh ./deploy/kube-ssh \
+  --namespace kube-ssh --create-namespace \
+  --set kubeSsh.backend.mode=node
+```
+
+When `kubeSsh.node.tls.existingSecret` is empty, Helm creates and preserves a
+release-scoped CA and a certificate shared by the Node server and Gateway
+client. For
+operator-managed PKI, set `existingSecret` to a standard TLS Secret containing
+`ca.crt`, `tls.crt`, and `tls.key`. The node server and gateway client use the
+same certificate; its SAN must cover the configured Node server name and its
+common name must match `kubeSsh.node.expectedClientName`. The node process
+dynamically reloads its serving certificate and client CA when the mounted
+files change, so new connections use rotated credentials without restarting
+the DaemonSet.
+
+The DaemonSet mounts the host `/run` directory read-only. When
+`kubeSsh.node.runtimeEndpoints` is empty, the Node process checks common
+containerd, CRI-O, K3s, K0s, and cri-dockerd Unix sockets in order and uses the
+first ready CRI v1 endpoint. Set `runtimeEndpoints` to an ordered list to
+override discovery. Gateway Pods must be able to reach every node's HostIP on
+the configured Node stream port. CRI socket access grants node-level container
+execution authority, so restrict DaemonSet mutation, TLS Secret access, and
+network reachability accordingly.
 
 ## Installation
 

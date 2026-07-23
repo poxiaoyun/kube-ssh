@@ -15,6 +15,9 @@ import (
 // A nil error with a non-zero exit code means the command ran but exited non-zero;
 // a non-nil error means the exec itself failed.
 func (b *Backend) Exec(ctx context.Context, req backend.ExecRequest) (int, error) {
+	if b.execOverride != nil {
+		return b.execOverride(ctx, req)
+	}
 	podTarget, err := ParseTarget(req.Target)
 	if err != nil {
 		return 1, err
@@ -55,9 +58,6 @@ func (b *Backend) Exec(ctx context.Context, req backend.ExecRequest) (int, error
 }
 
 func (b *Backend) exec(ctx context.Context, req backend.ExecRequest) (int, error) {
-	if b.execOverride != nil {
-		return b.execOverride(ctx, req)
-	}
 	return b.Exec(ctx, req)
 }
 

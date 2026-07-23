@@ -24,6 +24,7 @@ type Target struct {
 	Options []KeyValue `json:"options,omitempty"`
 
 	release func()
+	runtime map[string]string
 }
 
 type KeyValue struct {
@@ -143,6 +144,25 @@ func (t Target) Option(key string) string {
 		}
 	}
 	return ""
+}
+
+// RuntimeValue returns resolver-owned metadata that must not be accepted from
+// an untrusted target hint or included in the target's stable external form.
+func (t Target) RuntimeValue(key string) string {
+	return t.runtime[key]
+}
+
+// WithRuntimeValue attaches trusted, connection-scoped resolution metadata.
+// Backends use this to bind a resolved name to the exact workload instance.
+func WithRuntimeValue(t *Target, key, value string) *Target {
+	if t == nil || key == "" || value == "" {
+		return t
+	}
+	if t.runtime == nil {
+		t.runtime = map[string]string{}
+	}
+	t.runtime[key] = value
+	return t
 }
 
 func (t Target) ToPath() string {

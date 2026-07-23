@@ -74,6 +74,53 @@ func TestPolicyUsernameResolverUsesKubernetesDefaultContainer(t *testing.T) {
 	}
 }
 
+func TestBindingResolverPinsPodInstance(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "nginx", UID: "uid-1"},
+		Spec:       corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{{Name: "app"}}},
+		Status:     corev1.PodStatus{HostIP: "10.0.0.2"},
+	}
+	resolver := NewBindingResolver(NewUsernameResolver(UsernameResolverOptions{}), UsernameResolverOptions{
+		Pods: fakePodGetter{pod: pod}, DefaultContainerMode: "All", LimitContainerMode: "All",
+	})
+	tgt, err := resolver.Resolve(context.Background(), target.ResolveRequest{SSHUser: "default.nginx"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got := tgt.Option(OptionContainers); got != "app" {
+		t.Fatalf("container = %q, want app", got)
+	}
+	if got := tgt.RuntimeValue(RuntimePodUID); got != "uid-1" {
+		t.Fatalf("pod UID = %q, want uid-1", got)
+	}
+	if got := tgt.RuntimeValue(RuntimeNodeName); got != "node-a" {
+		t.Fatalf("node = %q, want node-a", got)
+	}
+	if got := tgt.RuntimeValue(RuntimeHostIP); got != "10.0.0.2" {
+		t.Fatalf("host IP = %q, want 10.0.0.2", got)
+	}
+}
+
+func TestBindingResolverReleasesSelectionOnBindFailure(t *testing.T) {
+	released := 0
+	inner := resolverFunc(func(context.Context, target.ResolveRequest) (*target.Target, error) {
+		return target.WithRelease(NewTarget("default", "missing", "app"), func() { released++ }), nil
+	})
+	resolver := NewBindingResolver(inner, UsernameResolverOptions{Pods: fakePodGetter{}, DefaultContainerMode: "All", LimitContainerMode: "All"})
+	if _, err := resolver.Resolve(context.Background(), target.ResolveRequest{}); err == nil {
+		t.Fatal("Resolve() error = nil")
+	}
+	if released != 1 {
+		t.Fatalf("release count = %d, want 1", released)
+	}
+}
+
+type resolverFunc func(context.Context, target.ResolveRequest) (*target.Target, error)
+
+func (f resolverFunc) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
+	return f(ctx, req)
+}
+
 type fakePodGetter struct{ pod *corev1.Pod }
 
 func (g fakePodGetter) Get(_ context.Context, namespace, name string) (*corev1.Pod, error) {

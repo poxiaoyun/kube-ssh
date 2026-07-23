@@ -2,6 +2,22 @@
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "kube-ssh.nodeEnabled" -}}
+{{- if or .Values.kubeSsh.node.enabled (eq .Values.kubeSsh.backend.mode "node") -}}true{{- end -}}
+{{- end -}}
+
+{{- define "kube-ssh.nodeTLSSecretName" -}}
+{{- if .Values.kubeSsh.node.tls.existingSecret -}}
+{{- .Values.kubeSsh.node.tls.existingSecret -}}
+{{- else -}}
+{{- printf "%s-node-tls" (include "kube-ssh.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "kube-ssh.nodeServerName" -}}
+{{- default (printf "%s-node.%s.svc" (include "kube-ssh.fullname" .) .Release.Namespace) .Values.kubeSsh.backend.node.serverName -}}
+{{- end -}}
+
 {{- define "kube-ssh.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}

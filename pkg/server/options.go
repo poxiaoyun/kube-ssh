@@ -14,6 +14,7 @@ type Options struct {
 	AdvertiseAddresses []string              `json:"advertiseAddresses,omitempty"`
 	HostKeyFile        string                `json:"hostKeyFile,omitempty"`
 	Kubeconfig         string                `json:"kubeconfig,omitempty"`
+	Backend            BackendOptions        `json:"backend,omitempty"`
 	Helper             HelperOptions         `json:"helper,omitempty"`
 	AccessPolicy       AccessPolicyOptions   `json:"accessPolicy,omitempty"`
 	Policy             PolicyOptions         `json:"policy,omitempty"`
@@ -21,6 +22,19 @@ type Options struct {
 	Audit              AuditOptions          `json:"audit,omitempty"`
 	Authentication     AuthenticationOptions `json:"authentication,omitempty"`
 	Authorization      AuthorizationOptions  `json:"authorization,omitempty"`
+}
+
+type BackendOptions struct {
+	Mode string             `json:"mode,omitempty"`
+	Node NodeBackendOptions `json:"node,omitempty"`
+}
+
+type NodeBackendOptions struct {
+	Port       int    `json:"port,omitempty"`
+	ServerName string `json:"serverName,omitempty"`
+	CAFile     string `json:"caFile,omitempty"`
+	CertFile   string `json:"certFile,omitempty"`
+	KeyFile    string `json:"keyFile,omitempty"`
 }
 
 type PolicyOptions struct {
@@ -76,9 +90,12 @@ type AuditOptions struct {
 func NewDefaultOptions() *Options {
 	return &Options{
 		ListenAddress: ":2222",
-		Helper:        HelperOptions{RemoteDir: "/tmp"},
-		Metrics:       MetricsOptions{Path: "/metrics"},
-		Audit:         AuditOptions{QueueSize: 4096, FlushTimeout: 5 * time.Second},
+		Backend: BackendOptions{Mode: "kubernetes", Node: NodeBackendOptions{
+			Port: 10443, ServerName: "kube-ssh-node.kube-ssh.svc",
+		}},
+		Helper:  HelperOptions{RemoteDir: "/tmp"},
+		Metrics: MetricsOptions{Path: "/metrics"},
+		Audit:   AuditOptions{QueueSize: 4096, FlushTimeout: 5 * time.Second},
 		Authentication: AuthenticationOptions{
 			Webhook: webhookclient.Options{Timeout: webhookclient.DefaultTimeout},
 		},

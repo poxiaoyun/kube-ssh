@@ -1,0 +1,116 @@
+{{- if include "kube-ssh.nodeEnabled" . }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "kube-ssh.fullname" . }}-node
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "kube-ssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kube-ssh.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "kube-ssh.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: node
+        {{- with .Values.kubeSsh.node.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.kubeSsh.node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 35
+      {{- $imagePullSecrets := include "kube-ssh.imagePullSecrets" . }}
+      {{- if $imagePullSecrets }}
+      {{- $imagePullSecrets | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: node
+          image: {{ include "kube-ssh.image" . | quote }}
+          imagePullPolicy: {{ .Values.kubeSsh.image.pullPolicy | quote }}
+          command: [/usr/local/bin/kube-ssh-node]
+          args:
+            - --listen-address=:{{ .Values.kubeSsh.backend.node.port }}
+            - --management-listen-address=:{{ .Values.kubeSsh.node.managementPort }}
+            {{- range .Values.kubeSsh.node.runtimeEndpoints }}
+            - --runtime-endpoint={{ . }}
+            {{- end }}
+            - --helper-path={{ .Values.kubeSsh.helper.path }}
+            - --helper-remote-dir={{ .Values.kubeSsh.helper.remoteDir }}
+            - --tls-ca-file=/etc/kube-ssh/node-tls/ca.crt
+            - --tls-cert-file=/etc/kube-ssh/node-tls/tls.crt
+            - --tls-key-file=/etc/kube-ssh/node-tls/tls.key
+            - --tls-client-name={{ .Values.kubeSsh.node.expectedClientName }}
+          ports:
+            - name: stream
+              containerPort: {{ .Values.kubeSsh.backend.node.port }}
+              hostPort: {{ .Values.kubeSsh.backend.node.port }}
+              protocol: TCP
+            - name: management
+              containerPort: {{ .Values.kubeSsh.node.managementPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: management
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: management
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 0
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.kubeSsh.node.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime-sockets
+              mountPath: /run
+              readOnly: true
+            - name: node-tls
+              mountPath: /etc/kube-ssh/node-tls
+              readOnly: true
+      volumes:
+        - name: runtime-sockets
+          hostPath:
+            path: /run
+            type: Directory
+        - name: node-tls
+          secret:
+            secretName: {{ include "kube-ssh.nodeTLSSecretName" . }}
+            defaultMode: 0400
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+      {{- with .Values.kubeSsh.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.node.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubeSsh.node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

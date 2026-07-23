@@ -25,6 +25,7 @@ import (
 	generatedinformers "xiaoshiai.cn/kube-ssh/pkg/generated/informers/externalversions"
 	"xiaoshiai.cn/kube-ssh/pkg/kube"
 	"xiaoshiai.cn/kube-ssh/pkg/metrics"
+	"xiaoshiai.cn/kube-ssh/pkg/nodebackend"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 	"xiaoshiai.cn/kube-ssh/pkg/version"
 )
@@ -123,7 +124,11 @@ func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error)
 		},
 		Authenticator: authenticator,
 		Authorizer:    authorizer,
-		Resolver:      buildResolver(accessRuntime.resolver, directResolver),
+		Resolver: kube.NewBindingResolver(buildResolver(accessRuntime.resolver, directResolver), kube.UsernameResolverOptions{
+			Pods:                 accesspolicy.NewKubernetesPodLister(kubeClient),
+			DefaultContainerMode: opts.Policy.Defaults.ContainerMode,
+			LimitContainerMode:   opts.Policy.Limits.ContainerMode,
+		}),
 		AccessPolicy:  accessRuntime.accessPolicy,
 		Backend:       backend,
 		AuditRecorder: auditRecorder,
@@ -477,6 +482,20 @@ func buildMetrics(opts *Options) metrics.Recorder {
 }
 
 func buildBackend(opts *Options, kubeClient kubernetes.Interface, restConfig *rest.Config, recorder metrics.Recorder) (backend.Backend, error) {
+	if opts.Backend.Mode == "node" {
+		nodeBackend, err := nodebackend.New(kubeClient, nodebackend.Options{
+			Port: opts.Backend.Node.Port, ServerName: opts.Backend.Node.ServerName,
+			CAFile: opts.Backend.Node.CAFile, CertFile: opts.Backend.Node.CertFile,
+			KeyFile: opts.Backend.Node.KeyFile, Metrics: recorder,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build node backend: %w", err)
+		}
+		return backend.WithMetrics(nodeBackend, recorder), nil
+	}
+	if opts.Backend.Mode != "" && opts.Backend.Mode != "kubernetes" {
+		return nil, fmt.Errorf("backend mode %q is invalid; use kubernetes or node", opts.Backend.Mode)
+	}
 	kubeBackend := kube.NewBackend(kubeClient, restConfig, kube.BackendOptions{
 		HelperPath:      opts.Helper.Path,
 		HelperRemoteDir: opts.Helper.RemoteDir,

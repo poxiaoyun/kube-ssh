@@ -27,6 +27,57 @@ type UsernameResolverOptions struct {
 	LimitContainerMode   string
 }
 
+type BindingResolver struct {
+	resolver    target.Resolver
+	pods        PodGetter
+	defaultMode string
+	limitMode   string
+}
+
+// NewBindingResolver binds every Kubernetes target, including authentication
+// hints and Access selections, to the live Pod UID and node for one SSH
+// connection.
+func NewBindingResolver(resolver target.Resolver, options UsernameResolverOptions) target.Resolver {
+	return &BindingResolver{resolver: resolver, pods: options.Pods, defaultMode: options.DefaultContainerMode, limitMode: options.LimitContainerMode}
+}
+
+func (r *BindingResolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
+	tgt, err := r.resolver.Resolve(ctx, req)
+	if err != nil || tgt == nil || tgt.Kind != KindTarget || r.pods == nil {
+		return tgt, err
+	}
+	bound := false
+	defer func() {
+		if !bound {
+			tgt.Release()
+		}
+	}()
+	podTarget, err := ParseTarget(tgt)
+	if err != nil {
+		return nil, err
+	}
+	pod, err := r.pods.Get(ctx, podTarget.Namespace, podTarget.Pod)
+	if err != nil {
+		return nil, status.InvalidTarget("pod %s/%s is not available", podTarget.Namespace, podTarget.Pod)
+	}
+	explicit := podTarget.Container != ""
+	container, defaultContainer, err := ResolvePodContainer(pod, podTarget.Container)
+	if err != nil {
+		return nil, err
+	}
+	if !ContainerModeAllows(r.defaultMode, explicit, container, defaultContainer) || !ContainerModeAllows(r.limitMode, explicit, container, defaultContainer) {
+		return nil, status.InvalidTarget("container %q is not allowed by global policy", container)
+	}
+	if !explicit {
+		tgt.Options = append(tgt.Options, target.KeyValue{Key: OptionContainers, Value: container})
+	}
+	target.WithRuntimeValue(tgt, RuntimePodUID, string(pod.UID))
+	target.WithRuntimeValue(tgt, RuntimeNodeName, pod.Spec.NodeName)
+	target.WithRuntimeValue(tgt, RuntimeHostIP, pod.Status.HostIP)
+	bound = true
+	return tgt, nil
+}
+
 func NewUsernameResolver(options UsernameResolverOptions) *UsernameResolver {
 	return &UsernameResolver{
 		pods:        options.Pods,
@@ -75,7 +126,7 @@ func (r *UsernameResolver) Resolve(ctx context.Context, req target.ResolveReques
 	if !ContainerModeAllows(r.defaultMode, requested, container, defaultContainer) || !ContainerModeAllows(r.limitMode, requested, container, defaultContainer) {
 		return nil, status.InvalidTarget("container %q is not allowed by global policy", container)
 	}
-	return NewTarget(namespace, pod, container), nil
+	return NewTargetForPod(podObject, container), nil
 }
 
 // ResolvePodContainer resolves an explicitly requested or Kubernetes-default

@@ -886,6 +886,8 @@ spec:
               value: "/usr/local/bin/kube-ssh-helper"
             - name: HELPER_REMOTE_DIR
               value: "/tmp"
+            - name: BACKEND_MODE
+              value: "kubernetes"
             - name: ACCESS_POLICY_ENABLED
               value: "true"
             - name: AUTHENTICATION_ANONYMOUS

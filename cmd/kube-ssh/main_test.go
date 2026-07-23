@@ -53,6 +53,20 @@ func TestLoadEnvGatewayConfiguration(t *testing.T) {
 	}
 }
 
+func TestNodeBackendFlagsUseNodeNames(t *testing.T) {
+	flags := newRootCmd().Flags()
+	for _, name := range []string{"node-port", "node-server-name", "node-ca-file", "node-cert-file", "node-key-file"} {
+		if flags.Lookup(name) == nil {
+			t.Errorf("flag --%s is missing", name)
+		}
+	}
+	for _, name := range []string{"agent-port", "agent-server-name", "agent-ca-file", "agent-cert-file", "agent-key-file"} {
+		if flags.Lookup(name) != nil {
+			t.Errorf("legacy component flag --%s is still registered", name)
+		}
+	}
+}
+
 func TestLoadEnvPreservesQuotedSliceValue(t *testing.T) {
 	t.Setenv("AUTHORIZED_KEY", `"alice=ssh-ed25519 AAAA comment"`)
 	var keys []string

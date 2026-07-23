@@ -67,6 +67,36 @@ kubeSsh:
     path: /usr/local/bin/kube-ssh-helper
     remoteDir: /tmp
 
+  backend:
+    # kubernetes uses pods/exec and pods/portforward through the apiserver.
+    # node sends data directly to the node-local CRI data plane.
+    mode: kubernetes
+    node:
+      port: 10443
+      serverName: ""
+
+  node:
+    enabled: false
+    # Checked in order. Leave empty to probe common containerd, CRI-O, K3s,
+    # K0s, and cri-dockerd sockets below the mounted host /run directory.
+    runtimeEndpoints: []
+    managementPort: 18080
+    expectedClientName: kube-ssh-gateway
+    tls:
+      # Leave empty to let Helm generate and preserve a release-scoped CA and
+      # certificate. An existing Secret must contain ca.crt, tls.crt, tls.key.
+      existingSecret: ""
+    podAnnotations: {}
+    podLabels: {}
+    resources:
+      limits: {}
+      requests: {}
+    nodeSelector:
+      kubernetes.io/os: linux
+    tolerations:
+      - operator: Exists
+    affinity: {}
+
   policy:
     defaults:
       containerMode: KubernetesDefault

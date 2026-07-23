@@ -35,6 +35,7 @@ rules:
       - get
       - list
       - watch
+  {{- if ne .Values.kubeSsh.backend.mode "node" }}
   - apiGroups:
       - ""
     resources:
@@ -43,6 +44,7 @@ rules:
     verbs:
       - create
       - get
+  {{- end }}
   - apiGroups:
       - ""
     resources:

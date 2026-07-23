@@ -98,7 +98,7 @@ func (r *Resolver) Resolve(ctx context.Context, req target.ResolveRequest) (*tar
 		selection.release()
 		return nil, status.InvalidTarget("container %q is not allowed by access %s/%s", container, locator.namespace, locator.access)
 	}
-	return target.WithRelease(kube.NewTarget(locator.namespace, selection.pod.Name, container), selection.release), nil
+	return target.WithRelease(kube.NewTargetForPod(&selection.pod, container), selection.release), nil
 }
 
 func resolveRequestedAccess(ctx context.Context, store AccessGetter, sshUser string, extra map[string][]string) (AccessLocator, *sshv1.Access, bool, error) {
