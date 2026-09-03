@@ -4,7 +4,7 @@ kube-ssh 为 Kubernetes Pod 提供统一的 SSH 访问入口。安装后，使�
 
 ## 对外访问地址
 
-安装时填写 `kubeSsh.advertiseAddresses`，地址必须是用户能够访问的 `host:port`：
+可以通过 `kubeSsh.advertiseAddresses` 显式填写用户能够访问的 `host:port`：
 
 ```yaml
 kubeSsh:
@@ -12,7 +12,11 @@ kubeSsh:
     - ssh.example.com:2222
 ```
 
-可以配置多个地址。可用地址会发布到 Access 状态，供平台展示 SSH 连接信息。
+可以配置多个地址。显式地址会发布到 Access 状态，供平台展示 SSH 连接信息。
+
+未显式配置地址且 Service 类型为 `NodePort` 时，Chart 自动根据
+`kubeSsh.service.nodePorts.ssh` 发布 `{NodeIP}:<nodePort>`。Installer 将该模板展开为
+Cloud 允许发布的 Node Host/IP；Access 状态本身保留模板。
 
 ## 多网关
 

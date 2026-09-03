@@ -428,7 +428,8 @@ type AccessStatus struct {
 
 // AccessStatusEndpoint is one address advertised by the owning gateway.
 type AccessStatusEndpoint struct {
-	// Address is a DNS name or IP plus port. IPv6 addresses must be bracketed.
+	// Address is a DNS name or IP plus port, or the platform Node address
+	// placeholder {NodeIP} plus port. IPv6 addresses must be bracketed.
 	Address string `json:"address"`
 
 	// Username is the SSH target locator for this Access.

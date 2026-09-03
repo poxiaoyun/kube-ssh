@@ -534,6 +534,14 @@ SSH username 推荐用于编码目标（如 `namespace.pod.container`）。由�
 
 审计日志必须同时记录 SSH username 原文、解析后的 target locator、认证后的用户主体和认证方法。
 
+### Access 访问地址
+
+`Access.status.endpoints` 是网关向调用方声明 SSH 连接目标的接口。每项必须包含用于定位 Access 的 username，以及带端口的地址。地址可以是具体的 `host:port`，也可以使用平台节点地址模板 `{NodeIP}:port`；模板只表达“使用集群允许发布的 Node 地址”，不表达某个具体 Node。
+
+显式配置的 advertise addresses 是网关地址的权威输入。未显式配置地址、且 Helm adapter 将网关暴露为具有固定 nodePort 的 NodePort Service 时，adapter 必须根据该 nodePort 生成 `{NodeIP}:port` 作为默认地址。其它 Service 类型不得隐式生成 Node 地址模板。
+
+KubeSSH 负责发布地址或模板，但不读取 Node metadata，也不解析 `{NodeIP}`。Installer 消费 Access status 时，负责按 Cloud 拥有的 Node Host/IP 声明协议将模板解析为具体 endpoint；不经过 Installer 的调用方可以把模板作为尚待集群地址解析的可读连接目标展示。
+
 ## 扩展点与配置机制
 
 本节说明网关的核心决策点如何对外开放扩展，以及各接入方式的适用场景。

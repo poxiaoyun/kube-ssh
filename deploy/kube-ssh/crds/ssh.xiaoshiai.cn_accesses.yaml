@@ -629,8 +629,9 @@ spec:
                     owning gateway.
                   properties:
                     address:
-                      description: Address is a DNS name or IP plus port. IPv6 addresses
-                        must be bracketed.
+                      description: |-
+                        Address is a DNS name or IP plus port, or the platform Node address
+                        placeholder {NodeIP} plus port. IPv6 addresses must be bracketed.
                       type: string
                     username:
                       description: Username is the SSH target locator for this Access.

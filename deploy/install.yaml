@@ -631,8 +631,9 @@ spec:
                     owning gateway.
                   properties:
                     address:
-                      description: Address is a DNS name or IP plus port. IPv6 addresses
-                        must be bracketed.
+                      description: |-
+                        Address is a DNS name or IP plus port, or the platform Node address
+                        placeholder {NodeIP} plus port. IPv6 addresses must be bracketed.
                       type: string
                     username:
                       description: Username is the SSH target locator for this Access.
@@ -672,6 +673,7 @@ metadata:
     app.kubernetes.io/version: "v0.0.0"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: gateway
+
 ---
 # Source: kube-ssh/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -732,6 +734,7 @@ rules:
       - subjectaccessreviews
     verbs:
       - create
+
 ---
 # Source: kube-ssh/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -854,6 +857,8 @@ spec:
           env:
             - name: LISTEN_ADDRESS
               value: ":22"
+            - name: ADVERTISE_ADDRESS
+              value: "{NodeIP}:30022"
             - name: METRICS_LISTEN_ADDRESS
               value: ":8080"
             - name: METRICS_PATH

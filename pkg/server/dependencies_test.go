@@ -69,11 +69,15 @@ func TestAdvertisedAccessEndpoints(t *testing.T) {
 		" ssh.example.com:2222 ",
 		"ssh.example.com:2222",
 		"[2001:db8::1]:22",
+		"{NodeIP}:30022",
 	})
 	if err != nil {
 		t.Fatalf("advertisedAccessEndpoints() error = %v", err)
 	}
-	if len(got) != 2 || got[0].Address != "ssh.example.com:2222" || got[1].Address != "[2001:db8::1]:22" {
+	if len(got) != 3 ||
+		got[0].Address != "ssh.example.com:2222" ||
+		got[1].Address != "[2001:db8::1]:22" ||
+		got[2].Address != "{NodeIP}:30022" {
 		t.Fatalf("endpoints = %#v", got)
 	}
 }

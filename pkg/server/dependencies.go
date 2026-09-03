@@ -30,6 +30,8 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/version"
 )
 
+const nodeIPPlaceholder = "{NodeIP}"
+
 // Dependencies are the runtime collaborators built from raw Options.
 //
 // The SSH login path is intentionally staged:
@@ -180,7 +182,7 @@ func advertisedAccessEndpoints(addresses []string) ([]sshv1.AccessStatusEndpoint
 		if err != nil || host == "" {
 			return nil, fmt.Errorf("advertise address %q must use host:port form", value)
 		}
-		if net.ParseIP(host) == nil {
+		if host != nodeIPPlaceholder && net.ParseIP(host) == nil {
 			if problems := validation.IsDNS1123Subdomain(host); len(problems) > 0 {
 				return nil, fmt.Errorf("advertise address %q has invalid host: %s", value, strings.Join(problems, ", "))
 			}

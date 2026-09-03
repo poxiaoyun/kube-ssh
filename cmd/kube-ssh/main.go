@@ -64,7 +64,7 @@ func newRootCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&opts.ListenAddress, "listen-address", opts.ListenAddress, "SSH listen address")
 	f.StringVar(&opts.GatewayClassName, "gateway-class-name", opts.GatewayClassName, "gateway class name; empty handles only Access objects without a class")
-	f.StringArrayVar(&opts.AdvertiseAddresses, "advertise-address", opts.AdvertiseAddresses, "gateway address to publish in matching Access status, in host:port form; repeatable")
+	f.StringArrayVar(&opts.AdvertiseAddresses, "advertise-address", opts.AdvertiseAddresses, "gateway address to publish in matching Access status, as host:port or {NodeIP}:port; repeatable")
 	f.StringVar(&opts.Kubeconfig, "kubeconfig", opts.Kubeconfig, "path to kubeconfig")
 	f.StringVar(&opts.HostKeyFile, "host-key-file", opts.HostKeyFile, "path to SSH host private key PEM file")
 	f.StringVar(&opts.Backend.Mode, "backend-mode", opts.Backend.Mode, "data-plane backend: kubernetes or node")

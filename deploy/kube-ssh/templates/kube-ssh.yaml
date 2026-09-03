@@ -136,6 +136,11 @@ spec:
             {{- with .Values.kubeSsh.advertiseAddresses }}
             - name: ADVERTISE_ADDRESS
               value: {{ join " " . | quote }}
+            {{- else }}
+            {{- if and (eq .Values.kubeSsh.service.type "NodePort") .Values.kubeSsh.service.nodePorts.ssh }}
+            - name: ADVERTISE_ADDRESS
+              value: {{ printf "{NodeIP}:%v" .Values.kubeSsh.service.nodePorts.ssh | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.kubeSsh.metrics.enabled }}
             - name: METRICS_LISTEN_ADDRESS

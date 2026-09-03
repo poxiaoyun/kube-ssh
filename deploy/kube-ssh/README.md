@@ -4,7 +4,7 @@ kube-ssh provides a unified SSH gateway for Kubernetes Pods. Access resources se
 
 ## Advertise addresses
 
-Set `kubeSsh.advertiseAddresses` during installation. Each entry must be a user-reachable `host:port` address:
+Set `kubeSsh.advertiseAddresses` to explicitly publish user-reachable `host:port` addresses:
 
 ```yaml
 kubeSsh:
@@ -25,6 +25,11 @@ kubeSsh:
     - ssh-a.example.com:2222
     - ssh-b.example.com:2222
 ```
+
+When no explicit address is configured and the Service type is `NodePort`, the
+Chart publishes `{NodeIP}:<nodePort>` from `kubeSsh.service.nodePorts.ssh`.
+Installer expands that template using the Node Host/IP declarations owned by
+Cloud; Access status itself retains the template.
 
 An Access `spec.gatewayClassName` must exactly match the gateway class. Gateway replicas sharing a class should advertise the same addresses.
 

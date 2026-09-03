@@ -372,12 +372,15 @@ Gateways may be partitioned by class. A gateway configured with
 `--gateway-class-name=default-gateway` only handles Access objects whose
 `spec.gatewayClassName` is `default-gateway`; a classless gateway only handles classless
 Access objects. Publish one or more externally reachable addresses with
-`--advertise-address=host:port`. The owning gateway reports them as structured
-entries under `status.endpoints`.
+`--advertise-address=host:port`. `{NodeIP}:port` is also accepted as the Rune
+platform Node-address template. When the Helm Chart uses a NodePort Service and
+no explicit address is configured, it derives this template from the configured
+SSH nodePort. The owning gateway reports the result as structured entries under
+`status.endpoints`.
 
-Each status endpoint contains the advertised `address` and the Access target
-base `username`. Append `~pod` or `~pod.container` when an explicit Pod is
-needed.
+Each status endpoint contains the advertised concrete address or Node-address
+template and the Access target base `username`. Append `~pod` or
+`~pod.container` when an explicit Pod is needed.
 
 > The SSH username first identifies the target Access. User identity is then
 > derived from a matching public key or password token in that Access. The same
