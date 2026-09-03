@@ -53,7 +53,7 @@ build-binary:
 BUILDX_PLATFORMS ?= linux/amd64,linux/arm64
 .PHONY: release-image
 release-image: build-binary
-	docker buildx build --platform=$(BUILDX_PLATFORMS) --push -t $(IMAGE_REGISTRY)/$(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(GIT_VERSION) -f Dockerfile $(BIN_DIR)
+	docker buildx build --platform=$(BUILDX_PLATFORMS) --provenance=false --push -t $(IMAGE_REGISTRY)/$(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(GIT_VERSION) -f Dockerfile $(BIN_DIR)
 
 .PHONY: build-helm
 build-helm:
