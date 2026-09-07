@@ -269,6 +269,7 @@ spec:
                       minLength: 1
                       type: string
                     insecureSkipVerification:
+                      default: false
                       description: |-
                         InsecureSkipVerification accepts any upstream host key. It must be opted in
                         explicitly and cannot be combined with pinned keys.

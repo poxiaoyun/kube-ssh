@@ -180,6 +180,8 @@ type AccessEndpoint struct {
 
 	// InsecureSkipVerification accepts any upstream host key. It must be opted in
 	// explicitly and cannot be combined with pinned keys.
+	//
+	// +kubebuilder:default=false
 	InsecureSkipVerification bool `json:"insecureSkipVerification,omitempty"`
 }
 

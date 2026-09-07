@@ -359,6 +359,49 @@ var _ = Describe("Access policy runtime", func() {
 })
 
 var _ = Describe("Access CRD schema", func() {
+	DescribeTable("validates External host-key policy", func(skipVerification any, pinned, accepted bool) {
+		ns := createEnvtestNamespace()
+		client, err := dynamic.NewForConfig(envtestConfig)
+		Expect(err).
+			NotTo(HaveOccurred())
+
+		endpoint := map[string]any{
+			"name":            "main",
+			"address":         "sshd.example.com",
+			"username":        "user",
+			"privateKeysFrom": []any{map[string]any{"name": "upstream", "key": "private_key"}},
+		}
+		if skipVerification != nil {
+			endpoint["insecureSkipVerification"] = skipVerification
+		}
+		if pinned {
+			endpoint["publicKeysFrom"] = []any{map[string]any{"name": "upstream", "key": "host_key"}}
+		}
+		access := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "ssh.xiaoshiai.cn/v1",
+			"kind":       "Access",
+			"metadata":   map[string]any{"namespace": ns, "name": "host-key-policy"},
+			"spec":       map[string]any{"type": "External", "endpoints": []any{endpoint}},
+		}}
+		_, err = client.Resource(accessGVR()).
+			Namespace(ns).
+			Create(context.Background(), access, metav1.CreateOptions{})
+		if !accepted {
+			Expect(apierrors.IsInvalid(err)).
+				To(BeTrue())
+			return
+		}
+		Expect(err).
+			NotTo(HaveOccurred())
+	},
+		Entry("accepts pinned keys when verification setting is omitted", nil, true, true),
+		Entry("accepts pinned keys with explicit verification", false, true, true),
+		Entry("requires pinned keys when verification setting is omitted", nil, false, false),
+		Entry("requires pinned keys with explicit verification", false, false, false),
+		Entry("allows skipping verification without pinned keys", true, false, true),
+		Entry("rejects skipping verification with pinned keys", true, true, false),
+	)
+
 	It("rejects Pod Access objects without selectors", func() {
 		ns := createEnvtestNamespace()
 		access := &v1.Access{
