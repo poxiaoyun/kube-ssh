@@ -1,68 +1,34 @@
 # kube-ssh
 
-kube-ssh exposes Kubernetes Pods through standard OpenSSH clients without
-running `sshd` in workload containers.
+kube-ssh exposes Kubernetes workloads through standard OpenSSH clients. It can
+either provide SSH semantics for containers without `sshd`, or proxy the full
+SSH protocol to an existing upstream `sshd`.
 
 ## Architecture
 
 ```text
-+------------------+
-| OpenSSH clients  |
-| ssh / scp / sftp |
-+--------+---------+
-         |
-         v
-+------------------------------------------------------------------------+
-| kube-ssh gateway                                                       |
-|                                                                        |
-| +------------+   +--------+   +------------------+     +-------------+ |
-| | SSH server |-->| authn  |-->| target selection |     |             | |
-| +------------+   +--------+   +---------+--------+     |             | |
-|                                          |             |             | |
-|                                          v             |    audit    | |
-|                                  +-------------+       |             | |
-|                                  | authz       |       |             | |
-|                                  +------+------+       |             | |
-|                                         |              |             | |
-|                                         v              |             | |
-|                                  +---------------+     |             | |
-|                                  | session bridge|     |             | |
-|                                  +-------+-------+     +-------------+ |
-+------------------------------------------+-----------------------------+
-                                           |
-                                           v
-+------------------------------------------------------------------------+
-| Kubernetes API server                                                  |
-| pods/exec + pods/portforward                                           |
-+-----------+----------------------------------+-------------------------+
-            |                                  |
-            | pods/exec stdio                  | pods/portforward streams
-            v                                  v
-+------------------------------------------------------------------------+
-| Target Pod / container                                                 |
-|                                                                        |
-| +-------------------+              +-------------------------------+   |
-| | shell / exec      |              | local-forward target port     |   |
-| +-------------------+              +-------------------------------+   |
-|                                                                        |
-| +------------------------------------------------------------------+   |
-| | kube-ssh-helper                                                  |   |
-| |                                                                  |   |
-| | +------------+   +----------------+   +-----------------------+  |   |
-| | | sftp / scp |   | remote-forward |   | agent-forward         |  |   |
-| | +------------+   +----------------+   +-----------------------+  |   |
-| +------------------------------------------------------------------+   |
-+------------------------------------------------------------------------+
+OpenSSH client
+      |
+      v
+kube-ssh: authentication -> target resolution -> authorization/audit
+      |
+      +-- Pod SSH -> Pod backend
+      |              +-- API Server -> pods/exec,portforward
+      |              \-- CRI -> kube-ssh-node -> CRI v1 streaming
+      |
+      \-- SSH Proxy -> restricted endpoint dial -> upstream sshd
 ```
 
-This diagram shows the default `kubernetes` backend. The optional `node`
-backend keeps the gateway control plane but replaces the API-server streaming
-path with a direct node-local CRI path.
+These are two independent abstraction levels. The connection protocol is
+implemented by either Pod SSH or SSH Proxy. Only Pod SSH enters the Pod backend
+and selects the API Server or node-local CRI transport. SSH Proxy forwards SSH
+channels and requests to an existing server and never enters that
+backend interface.
 
 ## Features
 
-- Access any Pod/container with standard OpenSSH clients, without application
-  changes or a workload-local `sshd`.
+- Access a Pod/container without a workload-local `sshd`, or preserve an
+  existing sshd's login, PAM, and protocol behavior.
 - Select targets dynamically and bridge SSH sessions through Kubernetes-native
   APIs.
 - Control credentials, authorization, and SSH capabilities with workload-local
@@ -92,44 +58,96 @@ probes instead.
 | SSH feature                                                                | kube-ssh                                                |
 | -------------------------------------------------------------------------- | ------------------------------------------------------- |
 | Public key and password authentication                                     | Supported through configured authentication providers   |
-| Interactive shell (`session` / `shell`)                                    | Selected backend exec transport with PTY                |
-| Command execution (`session` / `exec`)                                     | Selected backend exec transport                         |
-| Terminal signals                                                           | Selected backend exec transport with PTY                |
-| PTY and resize (`pty-req` / `window-change`)                               | Selected backend exec transport                         |
-| Exit status (`exit-status`)                                                | Selected backend exec exit code                         |
+| Interactive shell (`session` / `shell`)                                    | Pod backend exec transport with PTY                     |
+| Command execution (`session` / `exec`)                                     | Pod backend exec transport                              |
+| Terminal signals                                                           | Pod backend exec transport with PTY                     |
+| PTY and resize (`pty-req` / `window-change`)                               | Pod backend exec transport                              |
+| Exit status (`exit-status`)                                                | Pod backend exec exit code                              |
 | Environment variables (`env`)                                              | Supported with global and per-Access allowlists         |
 | SFTP (`session` / `subsystem: sftp`)                                       | `kube-ssh-helper`                                       |
 | Legacy SCP (`session` / `exec`)                                            | Compatibility only via `kube-ssh-helper`; prefer SFTP   |
-| Pod-local port forwarding (`direct-tcpip` to localhost/loopback)           | Selected backend port-forward transport                 |
+| Pod-local port forwarding (`direct-tcpip` to localhost/loopback)           | Pod backend port-forward transport                      |
 | Network port forwarding (`direct-tcpip` to a hostname/IP)                  | Dialed from the target container by `kube-ssh-helper`   |
 | Dynamic forwarding / SOCKS (`direct-tcpip`)                                | OpenSSH client SOCKS over local forwarding              |
 | Remote port forwarding (`tcpip-forward` / `forwarded-tcpip`)               | Listener through `kube-ssh-helper`                      |
 | Agent forwarding (`auth-agent-req@openssh.com` / `auth-agent@openssh.com`) | Agent socket through `kube-ssh-helper`                  |
-| X11 forwarding (`x11-req` / `x11`)                                         | Planned                                                 |
-| Session recording                                                          | Planned                                                 |
 | `ssh-copy-id` / `authorized_keys` enrollment                               | Not supported; credentials are managed through `Access` |
 
-The table describes the SSH capabilities exposed to clients. In `node` mode,
+The table describes the SSH capabilities exposed to clients. With the `cri` transport,
 CRI exec/port-forward replaces the corresponding API-server transport, while
 `kube-ssh-helper` continues to provide the application-layer capabilities.
+For External Access, these protocol operations are forwarded to the upstream
+sshd after authorization; unknown channel/request extensions additionally
+require the `ssh_extension` capability.
 
-## Backend modes
+## SSH Proxy
 
-The backend mode selects how an already authenticated and authorized SSH
+Use `type: External` to proxy the full SSH protocol to an existing SSH server.
+The upstream server may run in a Pod, elsewhere in the cluster, or on any
+reachable host; topology does not change the proxy semantics. Each endpoint
+directly declares one `address` and `port`; an in-cluster SSH Service uses its
+DNS name in the same `address` field. There is no `serviceName` alternative or
+Kubernetes Service lookup.
+
+```yaml
+apiVersion: ssh.xiaoshiai.cn/v1
+kind: Access
+metadata:
+  name: notebook
+  namespace: default
+spec:
+  type: External
+  endpoints:
+    - name: main
+      address: notebook-ssh.default.svc
+      port: 22
+      username: jovyan
+      privateKeysFrom:
+        - name: notebook-ssh-upstream
+          key: ssh_private_key
+      publicKeysFrom:
+        - name: notebook-ssh-upstream
+          key: ssh_host_keys
+  credentials:
+    - username: alice
+      publicKeysFrom:
+        - name: notebook-ssh-users
+          key: authorized_keys
+```
+
+The referenced Secrets must be in the Access namespace. Upstream private keys,
+whether inline or referenced, must be unencrypted; `ssh_host_keys` contains
+newline-delimited OpenSSH host public keys. Passwords may instead be configured
+inline with `passwords` or referenced with `passwordsFrom`; prefer Secret
+references when Access manifests are stored in source control. Inbound
+`credentials` authenticate the caller only: kube-ssh never forwards or falls
+back to the caller's password or key when authenticating to the upstream sshd.
+Missing or invalid gateway-owned upstream credentials fail the connection.
+
+The connector accepts only a plain DNS name or IP in `address`; schemes, paths,
+userinfo, query strings, fragments, and embedded ports are rejected. It binds
+the TCP and SSH handshakes to the selected endpoint's single `address:port`, so
+downstream SSH messages cannot redirect the upstream connection. Use cluster
+NetworkPolicy when deployment-level egress reachability must be restricted.
+
+## Pod SSH transports
+
+For Pod SSH, the transport selects how an already authenticated and authorized
 operation reaches its target container. It is fixed when the gateway starts;
-operations never switch modes or fall back to another backend.
+operations never switch transports or fall back. SSH Proxy does not use this
+setting.
 
-| Mode         | Stream data path                                                    | Kubernetes API server role                                      | Additional requirements                                      | Intended use                                      |
+| Transport    | Stream data path                                                    | Kubernetes API server role                                      | Additional requirements                                      | Intended use                                      |
 | ------------ | ------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------- |
-| `kubernetes` | Gateway → `pods/exec` or `pods/portforward` → container             | Control plane and all SSH stream data                           | Gateway RBAC for `pods/exec` and `pods/portforward`           | Default, simplest deployment                      |
-| `node`       | Gateway → node HostIP over mTLS → `kube-ssh-node` → CRI → container | Pod/policy/Secret watch, target lookup, SAR, and other control traffic only | Node DaemonSet, CRI socket access, mTLS PKI, node reachability | High-volume SSH sessions that should bypass the API server |
+| `apiserver` | Gateway → `pods/exec` or `pods/portforward` → container             | Control plane and all SSH stream data                           | Gateway RBAC for `pods/exec` and `pods/portforward`           | Default, simplest deployment                      |
+| `cri`       | Gateway → node HostIP over mTLS → `kube-ssh-node` → CRI → container | Pod/policy/Secret watch, target lookup, SAR, and other control traffic only | Node DaemonSet, CRI socket access, mTLS PKI, node reachability | High-volume SSH sessions that should bypass the API server |
 
-Both modes support the same SSH protocol capabilities. The difference is the
+Both transports support the same SSH protocol capabilities. The difference is the
 transport layer:
 
-- In `kubernetes` mode, the gateway injects and starts `kube-ssh-helper`
+- With `apiserver`, the gateway injects and starts `kube-ssh-helper`
   through `pods/exec`.
-- In `node` mode, `kube-ssh-node` injects and starts the helper through CRI.
+- With `cri`, `kube-ssh-node` injects and starts the helper through CRI.
 - The helper is still responsible for SFTP, legacy SCP, non-loopback dialing,
   remote forwarding, and agent forwarding; it is not the reason traffic
   traverses the API server.
@@ -138,20 +156,20 @@ Select the mode with one of the following equivalent settings:
 
 | Configuration surface | Setting                                      |
 | --------------------- | -------------------------------------------- |
-| Helm                  | `kubeSsh.backend.mode=kubernetes` or `node`   |
-| Command line          | `--backend-mode=kubernetes` or `node`         |
-| Environment           | `BACKEND_MODE=kubernetes` or `node`           |
+| Helm                  | `kubeSsh.managed.transport=apiserver` or `cri` |
+| Command line          | `--managed-transport=apiserver` or `cri`       |
+| Environment           | `MANAGED_TRANSPORT=apiserver` or `cri`         |
 
-`kubernetes` is the default. When Helm selects `node`, the chart also deploys
+`apiserver` is the default. When Helm selects `cri`, the chart also deploys
 the `kube-ssh-node` DaemonSet, mounts the configured CRI socket and mTLS
 Secret, and omits `pods/exec` and `pods/portforward` from the gateway
-ClusterRole. A manually configured gateway also needs `--node-port`,
-`--node-server-name`, `--node-ca-file`, `--node-cert-file`, and
-`--node-key-file`.
+ClusterRole. A manually configured gateway also needs `--cri-port`,
+`--cri-server-name`, `--cri-ca-file`, `--cri-cert-file`, and
+`--cri-key-file`.
 
 ## Node data plane
 
-The `node` backend deploys one `kube-ssh-node` per Linux node and uses this
+The `cri` transport deploys one `kube-ssh-node` per Linux node and uses this
 path:
 
 ```text
@@ -164,7 +182,7 @@ Kubernetes API server <- Pod watch/get, Access policy, Secret watch, SAR only
 The gateway still performs authentication, target selection, authorization,
 auditing, and policy enforcement. It binds the selected target to the Pod UID
 and node for the lifetime of the SSH connection. `kube-ssh-node` resolves that
-exact UID through CRI and rejects missing or ambiguous sandboxes. Node mode is
+exact UID through CRI and rejects missing or ambiguous sandboxes. The CRI transport is
 strict: a missing/unhealthy node data plane or CRI stream fails the operation
 and never falls back to `pods/exec` or `pods/portforward`.
 
@@ -175,12 +193,12 @@ so helper traffic no longer traverses the API server. Target images must
 provide either `sh` plus `cat`, or `tar`, for helper injection, matching the
 existing helper requirement.
 
-Enable the Node backend with Helm:
+Enable the node-local CRI transport with Helm:
 
 ```bash
 helm upgrade --install kube-ssh ./deploy/kube-ssh \
   --namespace kube-ssh --create-namespace \
-  --set kubeSsh.backend.mode=node
+  --set kubeSsh.managed.transport=cri
 ```
 
 When `kubeSsh.node.tls.existingSecret` is empty, Helm creates and preserves a
@@ -313,6 +331,8 @@ For CRD authentication, the SSH username is the target locator:
 - `default.notebook` selects the `notebook` Access in the `default` namespace.
 - `default.notebook.app` additionally selects the `app` container from the Pods
   matched by that Access.
+- An External Access accepts only `default.notebook`; Pod/container suffixes
+  do not apply because its endpoint is selected by the Access strategy.
 - The authenticated user identity comes from the matched credential entry, for example `credentials[0].username: alice`.
 
 The Access username formats are:
@@ -402,6 +422,12 @@ The direct Pod username formats are:
 - `namespace.pod`
 - `namespace.pod.container`
 
+Webhook HTTP authentication and TLS settings follow client-go: bearer token and
+basic authentication are mutually exclusive, and an explicit `caFile` replaces
+system trust roots and cannot be combined with `insecureSkipTLSVerify`.
+Webhook URLs must point directly to the handler; redirects are returned as errors
+and are never followed. The request timeout defaults to two seconds.
+
 ## Access Policy
 
 Credentials may be declared inline:
@@ -439,6 +465,7 @@ An empty capability policy inherits the gateway defaults. Set
 | `local_forward`  | Pod-local, network, and dynamic/SOCKS forwarding (`direct-tcpip`) |
 | `remote_forward` | Remote listeners (`tcpip-forward`)                                |
 | `agent_forward`  | SSH agent forwarding                                              |
+| `ssh_extension`  | Unknown SSH channel/request extensions for External Access        |
 
 ```yaml
 capabilities:
@@ -454,10 +481,6 @@ capabilities:
 String policy patterns use `*` as a wildcard matching any sequence of
 characters. For example, forwarding rules can use `db-*:5432`, `*:8080`, or
 `*` for every destination.
-
-Current runtime support is focused on Pod-backed `Access` objects. The API has
-reserved fields for external endpoints, but external SSH backend support is not
-enabled by the current controller/runtime path.
 
 ## Development
 

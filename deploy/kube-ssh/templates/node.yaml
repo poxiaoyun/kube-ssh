@@ -41,7 +41,7 @@ spec:
           imagePullPolicy: {{ .Values.kubeSsh.image.pullPolicy | quote }}
           command: [/usr/local/bin/kube-ssh-node]
           args:
-            - --listen-address=:{{ .Values.kubeSsh.backend.node.port }}
+            - --listen-address=:{{ .Values.kubeSsh.managed.cri.port }}
             - --management-listen-address=:{{ .Values.kubeSsh.node.managementPort }}
             {{- range .Values.kubeSsh.node.runtimeEndpoints }}
             - --runtime-endpoint={{ . }}
@@ -54,8 +54,8 @@ spec:
             - --tls-client-name={{ .Values.kubeSsh.node.expectedClientName }}
           ports:
             - name: stream
-              containerPort: {{ .Values.kubeSsh.backend.node.port }}
-              hostPort: {{ .Values.kubeSsh.backend.node.port }}
+              containerPort: {{ .Values.kubeSsh.managed.cri.port }}
+              hostPort: {{ .Values.kubeSsh.managed.cri.port }}
               protocol: TCP
             - name: management
               containerPort: {{ .Values.kubeSsh.node.managementPort }}

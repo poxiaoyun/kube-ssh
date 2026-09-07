@@ -1,7 +1,7 @@
 package spdyrpc
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
 )
 
@@ -21,12 +21,12 @@ type rpcResponse struct {
 	Payload RawMessage `json:"payload,omitempty"`
 }
 
-func newRPCRequest(codec Codec, method string, payload any) (rpcRequest, error) {
+func newRPCRequest(method string, payload any) (rpcRequest, error) {
 	request := rpcRequest{Method: method}
 	if payload == nil {
 		return request, nil
 	}
-	data, err := encodePayload(codec, payload)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return rpcRequest{}, err
 	}
@@ -34,20 +34,12 @@ func newRPCRequest(codec Codec, method string, payload any) (rpcRequest, error) 
 	return request, nil
 }
 
-func decodeRPCResponse(codec Codec, method string, response rpcResponse, out any) error {
+func decodeRPCResponse(method string, response rpcResponse, out any) error {
 	if !response.OK {
 		return fmt.Errorf("RPC request %q failed: %s", method, response.Error)
 	}
 	if out == nil || len(response.Payload) == 0 {
 		return nil
 	}
-	return codec.Decode(bytes.NewReader(response.Payload), out)
-}
-
-func encodePayload(codec Codec, payload any) (RawMessage, error) {
-	var buffer bytes.Buffer
-	if err := codec.Encode(&buffer, payload); err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
+	return json.Unmarshal(response.Payload, out)
 }

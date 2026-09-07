@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"testing"
-	"time"
 
 	"k8s.io/streaming/pkg/httpstream"
 	"k8s.io/streaming/pkg/httpstream/spdy"
@@ -21,7 +20,7 @@ func readExactly(t *testing.T, reader io.Reader, size int) string {
 }
 
 func TestServerCreateStream(t *testing.T) {
-	serverSide, clientSide := newStdioConnPair()
+	serverSide, clientSide := newTransportPair()
 	defer serverSide.Close()
 	defer clientSide.Close()
 
@@ -41,7 +40,7 @@ func TestServerCreateStream(t *testing.T) {
 	}
 	defer peer.Close()
 
-	connection, err := NewClientConnection(context.Background(), clientSide, ConnectionOptions{})
+	connection, err := NewClientConnection(context.Background(), clientSide)
 	if err != nil {
 		t.Fatalf("newServer() error = %v", err)
 	}
@@ -61,46 +60,28 @@ func TestServerCreateStream(t *testing.T) {
 	}
 }
 
-func TestServerOptions(t *testing.T) {
-	serverSide, clientSide := newStdioConnPair()
+func TestServerUsesCreateStreamTimeout(t *testing.T) {
+	serverSide, clientSide := newTransportPair()
 	defer serverSide.Close()
 	defer clientSide.Close()
 
-	timeout := 5 * time.Second
-	connection, err := NewClientConnection(context.Background(), clientSide, ConnectionOptions{
-		CreateStreamResponseTimeout: timeout,
-	})
+	connection, err := NewClientConnection(context.Background(), clientSide)
 	if err != nil {
 		t.Fatalf("newServer() error = %v", err)
 	}
-	if connection.createStreamResponseTimeout != timeout {
-		t.Fatalf("create stream response timeout = %v, want %v", connection.createStreamResponseTimeout, timeout)
-	}
-	if _, ok := connection.Codec().(JSONCodec); !ok {
-		t.Fatalf("default codec = %T, want JSONCodec", connection.Codec())
+	if connection.createStreamResponseTimeout != defaultCreateStreamResponseTimeout {
+		t.Fatalf("create stream response timeout = %v, want %v", connection.createStreamResponseTimeout, defaultCreateStreamResponseTimeout)
 	}
 	_ = serverSide.Close()
 	_ = connection.Close()
 }
 
-func TestServerRejectsInvalidTimeout(t *testing.T) {
-	serverSide, clientSide := newStdioConnPair()
-	defer serverSide.Close()
-	defer clientSide.Close()
-
-	if _, err := NewClientConnection(context.Background(), clientSide, ConnectionOptions{
-		CreateStreamResponseTimeout: -time.Second,
-	}); err == nil {
-		t.Fatal("newServer() error = nil, want invalid timeout error")
-	}
-}
-
 func TestServerRejectsUnsupportedStream(t *testing.T) {
-	serverSide, clientSide := newStdioConnPair()
+	serverSide, clientSide := newTransportPair()
 	defer serverSide.Close()
 	defer clientSide.Close()
 
-	connection, err := NewClientConnection(context.Background(), clientSide, ConnectionOptions{})
+	connection, err := NewClientConnection(context.Background(), clientSide)
 	if err != nil {
 		t.Fatalf("newServer() error = %v", err)
 	}

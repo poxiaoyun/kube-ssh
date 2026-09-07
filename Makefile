@@ -16,9 +16,9 @@ E2E_HELPER_GOARCH ?= $(shell go env GOARCH)
 E2E_HELPER ?= $(BIN_DIR)/e2e/kube-ssh-helper-$(E2E_HELPER_GOOS)-$(E2E_HELPER_GOARCH)
 
 LDFLAGS += -w -s
-LDFLAGS += -X 'xiaoshiai.cn/kube-ssh/pkg/version.GitVersion=$(GIT_VERSION)'
-LDFLAGS += -X 'xiaoshiai.cn/kube-ssh/pkg/version.GitCommit=$(GIT_COMMIT)'
-LDFLAGS += -X 'xiaoshiai.cn/kube-ssh/pkg/version.BuildDate=$(BUILD_DATE)'
+LDFLAGS += -X 'xiaoshiai.cn/kube-ssh/pkg/version.gitVersion=$(GIT_VERSION)'
+LDFLAGS += -X 'xiaoshiai.cn/kube-ssh/pkg/version.gitCommit=$(GIT_COMMIT)'
+LDFLAGS += -X 'xiaoshiai.cn/kube-ssh/pkg/version.buildDate=$(BUILD_DATE)'
 
 .PHONY: all
 all: build
@@ -86,11 +86,11 @@ BENCH_COUNT ?= 3
 BENCH_ARGS ?=
 .PHONY: benchmark
 benchmark:
-	go test ./pkg/server ./pkg/audit -run '^$$' -bench '$(BENCH)' -benchmem -benchtime=$(BENCHTIME) -count=$(BENCH_COUNT) $(BENCH_ARGS)
+	go test ./pkg/gateway ./pkg/audit -run '^$$' -bench '$(BENCH)' -benchmem -benchtime=$(BENCHTIME) -count=$(BENCH_COUNT) $(BENCH_ARGS)
 
 .PHONY: test-envtest
 test-envtest:
-	go test -tags=envtest ./pkg/server -run Envtest -count=1 -v
+	go test -tags=envtest ./pkg/gateway -run Envtest -count=1 -v
 
 .PHONY: e2e-build
 e2e-build: build

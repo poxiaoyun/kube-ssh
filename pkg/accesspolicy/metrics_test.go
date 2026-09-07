@@ -30,11 +30,11 @@ func TestMetricsAuthenticatorRecordsNotProvided(t *testing.T) {
 
 func TestMetricsResolverRecordsSuccess(t *testing.T) {
 	recorder := &accessPolicyMetricsRecorder{}
-	resolver := WithResolverMetrics(accessPolicyTestResolver(func(context.Context, target.ResolveRequest) (*target.Target, error) {
+	resolver := WithResolverMetrics(accessPolicyTestResolver(func(context.Context, target.ResolveInput) (*target.Target, error) {
 		return &target.Target{Kind: "kube"}, nil
 	}), recorder)
 
-	if _, err := resolver.Resolve(context.Background(), target.ResolveRequest{}); err != nil {
+	if _, err := resolver.Resolve(context.Background(), target.ResolveInput{}); err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 	if recorder.resolveResult != metrics.ResultSuccess {
@@ -108,8 +108,8 @@ func (a accessPolicyTestAuthenticator) AuthenticatePublicKey(context.Context, st
 	return nil, a.err
 }
 
-type accessPolicyTestResolver func(context.Context, target.ResolveRequest) (*target.Target, error)
+type accessPolicyTestResolver func(context.Context, target.ResolveInput) (*target.Target, error)
 
-func (r accessPolicyTestResolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
+func (r accessPolicyTestResolver) Resolve(ctx context.Context, req target.ResolveInput) (*target.Target, error) {
 	return r(ctx, req)
 }

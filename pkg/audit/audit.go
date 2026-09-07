@@ -1,3 +1,4 @@
+// Package audit defines the SSH audit event schema and recording seam.
 package audit
 
 import (
@@ -63,6 +64,7 @@ type Target struct {
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Container string `json:"container,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`
 }
 
 type Operation struct {
@@ -85,6 +87,7 @@ type Outcome struct {
 }
 
 type Recorder interface {
+	// Record accepts one event without changing the observed SSH operation.
 	Record(ctx context.Context, event Event)
 }
 

@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"slices"
 	"sync"
@@ -112,28 +111,6 @@ func (r *AsyncRecorder) observe(result string) {
 	if r.observer != nil {
 		r.observer(result)
 	}
-}
-
-type ChainSink []Sink
-
-func (s ChainSink) Write(ctx context.Context, event Event) error {
-	var errs []error
-	for _, sink := range s {
-		if sink != nil {
-			errs = append(errs, sink.Write(ctx, cloneEvent(event)))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (s ChainSink) Close(ctx context.Context) error {
-	var errs []error
-	for _, sink := range s {
-		if sink != nil {
-			errs = append(errs, sink.Close(ctx))
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func prepare(event *Event) {

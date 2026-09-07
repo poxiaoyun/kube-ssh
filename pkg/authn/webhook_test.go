@@ -23,12 +23,13 @@ func TestWebhookAuthenticatorPassword(t *testing.T) {
 			Authenticated: true,
 			User:          UserInfo{Name: "alice@example.com", Groups: []string{"dev"}},
 			Method:        "webhook-password",
-			TargetHints: []TargetHint{{
+			TargetHints: []WebhookTargetHint{{
 				Kind: "kube",
-				Options: []TargetHintOption{
+				Options: []WebhookTargetHintOption{
 					{Key: "namespaces", Value: "default"},
 					{Key: "pods", Value: "nginx"},
 				},
+				Extra: map[string][]string{"aliases": {"dev-nginx"}},
 			}},
 		})
 	}))
@@ -50,6 +51,9 @@ func TestWebhookAuthenticatorPassword(t *testing.T) {
 	}
 	if len(info.TargetHints) != 1 {
 		t.Fatalf("target hints = %#v", info.TargetHints)
+	}
+	if len(info.TargetHints[0].Aliases) != 1 || info.TargetHints[0].Aliases[0] != "dev-nginx" {
+		t.Fatalf("target hint aliases = %#v", info.TargetHints[0].Aliases)
 	}
 }
 

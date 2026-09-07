@@ -9,8 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"xiaoshiai.cn/kube-ssh/pkg/helper"
-	"xiaoshiai.cn/kube-ssh/pkg/spdyrpc"
+	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend/helper"
 )
 
 func main() {
@@ -26,13 +25,13 @@ func main() {
 	switch command {
 	case helper.CommandVersion:
 		err = runVersion()
-	case "dial":
+	case helper.CommandDial:
 		err = runDial(ctx, os.Args[2:])
 	case helper.CommandServe:
 		err = serveConnection(ctx)
-	case "sftp":
+	case helper.CommandSFTP:
 		err = runSFTP(ctx)
-	case "scp":
+	case helper.CommandSCP:
 		err = runSCP(ctx, os.Args[2:])
 	default:
 		err = fmt.Errorf("unsupported helper command: %s", command)
@@ -44,7 +43,8 @@ func main() {
 }
 
 func runVersion() error {
-	return json.NewEncoder(os.Stdout).Encode(helper.CurrentManifest())
+	return json.NewEncoder(os.Stdout).
+		Encode(helper.CurrentManifest())
 }
 
 func runSFTP(ctx context.Context) error {
@@ -56,7 +56,7 @@ func runSCP(ctx context.Context, args []string) error {
 }
 
 func serveConnection(ctx context.Context) error {
-	return helper.ServeConnection(ctx, os.Stdin, os.Stdout, spdyrpc.ConnectionOptions{})
+	return helper.ServeConnection(ctx, os.Stdin, os.Stdout)
 }
 
 func runDial(ctx context.Context, args []string) error {

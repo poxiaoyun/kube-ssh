@@ -1,3 +1,4 @@
+// Package ioproxy owns bidirectional stream copying and half-close semantics.
 package ioproxy
 
 import (
@@ -12,7 +13,7 @@ import (
 // signalling end-of-write to the remote side while leaving the read
 // side open so the peer's remaining data can still drain.
 //
-// Both golang.org/x/crypto/ssh.Channel and the Kubernetes backend Conn
+// Both golang.org/x/crypto/ssh.Channel and Pod backend streams
 // satisfy this interface.
 type HalfCloser interface {
 	io.ReadWriteCloser
@@ -23,12 +24,17 @@ type HalfCloser interface {
 // Waiter is implemented by streams that report an asynchronous terminal
 // result after their data path has finished.
 type Waiter interface {
+	// Wait returns the terminal result after the data path finishes.
 	Wait() error
 }
 
+// StreamObserver receives low-cardinality proxy lifecycle observations.
 type StreamObserver interface {
+	// StreamOpened records a newly proxied stream.
 	StreamOpened(kind string)
+	// StreamClosed records a closed proxied stream.
 	StreamClosed(kind string)
+	// StreamBytes records bytes copied in one direction.
 	StreamBytes(kind, direction string, n int64)
 }
 
@@ -126,11 +132,11 @@ func (r observedReader) Read(p []byte) (int, error) {
 
 // normalizeErr converts expected connection-close errors into nil.
 func normalizeErr(err error) error {
-	if err == nil ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, io.ErrClosedPipe) {
-		return nil
+	if err != nil &&
+		!errors.Is(err, io.EOF) &&
+		!errors.Is(err, net.ErrClosed) &&
+		!errors.Is(err, io.ErrClosedPipe) {
+		return err
 	}
-	return err
+	return nil
 }

@@ -53,16 +53,17 @@ func TestLoadEnvGatewayConfiguration(t *testing.T) {
 	}
 }
 
-func TestNodeBackendFlagsUseNodeNames(t *testing.T) {
-	flags := newRootCmd().Flags()
-	for _, name := range []string{"node-port", "node-server-name", "node-ca-file", "node-cert-file", "node-key-file"} {
+func TestPodSSHCRIFlagsUseCRIName(t *testing.T) {
+	flags := newRootCmd().
+		Flags()
+	for _, name := range []string{"managed-transport", "cri-port", "cri-server-name", "cri-ca-file", "cri-cert-file", "cri-key-file"} {
 		if flags.Lookup(name) == nil {
 			t.Errorf("flag --%s is missing", name)
 		}
 	}
-	for _, name := range []string{"agent-port", "agent-server-name", "agent-ca-file", "agent-cert-file", "agent-key-file"} {
+	for _, name := range []string{"backend-mode", "node-port", "node-server-name", "node-ca-file", "node-cert-file", "node-key-file"} {
 		if flags.Lookup(name) != nil {
-			t.Errorf("legacy component flag --%s is still registered", name)
+			t.Errorf("obsolete flag --%s is still registered", name)
 		}
 	}
 }

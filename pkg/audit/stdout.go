@@ -9,8 +9,10 @@ import (
 )
 
 type Sink interface {
-	Write(context.Context, Event) error
-	Close(context.Context) error
+	// Write delivers one prepared audit event.
+	Write(ctx context.Context, event Event) error
+	// Close flushes and releases the sink.
+	Close(ctx context.Context) error
 }
 
 type StdoutSink struct {
@@ -32,13 +34,3 @@ func (r *StdoutSink) Write(_ context.Context, event Event) error {
 }
 
 func (*StdoutSink) Close(context.Context) error { return nil }
-
-// StdoutRecorder is the synchronous compatibility recorder used by embedders.
-type StdoutRecorder struct{ sink *StdoutSink }
-
-func NewStdoutRecorder() *StdoutRecorder { return &StdoutRecorder{sink: NewStdoutSink(nil)} }
-
-func (r *StdoutRecorder) Record(ctx context.Context, event Event) {
-	prepare(&event)
-	_ = r.sink.Write(ctx, event)
-}

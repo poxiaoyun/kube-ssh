@@ -1,7 +1,9 @@
+// Package spdyrpc provides bidirectional JSON RPC and streams over SPDY.
 package spdyrpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,11 +22,16 @@ var (
 )
 
 // Handler handles one RPC method. The returned value is encoded into the
-// response payload with the connection Codec. Handler errors are returned to
+// response payload as JSON. Handler errors are returned to
 // the caller as RPC errors.
 type Handler interface {
-	Handle(context.Context, RawMessage) (any, error)
+	// Handle processes one decoded method payload and must return when ctx is
+	// canceled so connection shutdown can wait for all handlers.
+	Handle(ctx context.Context, payload RawMessage) (any, error)
 }
+
+// RawMessage contains an encoded RPC payload.
+type RawMessage = json.RawMessage
 
 // HandlerFunc adapts a function to Handler.
 type HandlerFunc func(context.Context, RawMessage) (any, error)
@@ -50,8 +57,8 @@ const (
 type Connection struct {
 	ctx                         context.Context
 	cancel                      context.CancelFunc
+	transport                   net.Conn
 	spdyConn                    *spdystream.Connection
-	codec                       Codec
 	createStreamResponseTimeout time.Duration
 
 	mu       sync.Mutex
@@ -69,29 +76,20 @@ type connectionCallResult struct {
 	err      error
 }
 
-// NewClientConnection creates a connection using the SPDY client role.
-func NewClientConnection(parent context.Context, transport net.Conn, options ConnectionOptions) (*Connection, error) {
-	return newConnection(parent, transport, false, options)
+// NewClientConnection creates a connection using the SPDY client role and
+// takes ownership of transport.
+func NewClientConnection(parent context.Context, transport net.Conn) (*Connection, error) {
+	return newConnection(parent, transport, false)
 }
 
-// NewServerConnection creates a connection using the SPDY server role.
-func NewServerConnection(parent context.Context, transport net.Conn, options ConnectionOptions) (*Connection, error) {
-	return newConnection(parent, transport, true, options)
+// NewServerConnection creates a connection using the SPDY server role and
+// takes ownership of transport.
+func NewServerConnection(parent context.Context, transport net.Conn) (*Connection, error) {
+	return newConnection(parent, transport, true)
 }
 
-func newConnection(parent context.Context, transport net.Conn, serverRole bool, options ConnectionOptions) (*Connection, error) {
+func newConnection(parent context.Context, transport net.Conn, serverRole bool) (*Connection, error) {
 	ctx, cancel := context.WithCancel(parent)
-	if options.Codec == nil {
-		options.Codec = JSONCodec{}
-	}
-	if options.CreateStreamResponseTimeout == 0 {
-		options.CreateStreamResponseTimeout = defaultCreateStreamResponseTimeout
-	}
-	if options.CreateStreamResponseTimeout < 0 {
-		cancel()
-		_ = transport.Close()
-		return nil, fmt.Errorf("create stream response timeout must not be negative")
-	}
 	spdyConn, err := spdystream.NewConnection(transport, serverRole)
 	if err != nil {
 		cancel()
@@ -101,9 +99,9 @@ func newConnection(parent context.Context, transport net.Conn, serverRole bool, 
 	return &Connection{
 		ctx:                         ctx,
 		cancel:                      cancel,
+		transport:                   transport,
 		spdyConn:                    spdyConn,
-		codec:                       options.Codec,
-		createStreamResponseTimeout: options.CreateStreamResponseTimeout,
+		createStreamResponseTimeout: defaultCreateStreamResponseTimeout,
 		handlers:                    make(map[string]Handler),
 		streamHandlers:              make(map[string]StreamHandler),
 		fatal:                       make(chan error, 1),
@@ -170,18 +168,20 @@ func (s *Connection) Call(ctx context.Context, method string, in any, out any) e
 	}
 	defer stream.Close()
 
-	request, err := newRPCRequest(s.codec, method, in)
+	request, err := newRPCRequest(method, in)
 	if err != nil {
 		return err
 	}
-	if err := s.codec.Encode(stream, request); err != nil {
+	if err := json.NewEncoder(stream).
+		Encode(request); err != nil {
 		return err
 	}
 
 	result := make(chan connectionCallResult, 1)
 	go func() {
 		response := rpcResponse{}
-		err := s.codec.Decode(stream, &response)
+		err := json.NewDecoder(stream).
+			Decode(&response)
 		result <- connectionCallResult{response: response, err: err}
 	}()
 	select {
@@ -189,7 +189,7 @@ func (s *Connection) Call(ctx context.Context, method string, in any, out any) e
 		if got.err != nil {
 			return got.err
 		}
-		return decodeRPCResponse(s.codec, method, got.response, out)
+		return decodeRPCResponse(method, got.response, out)
 	case <-ctx.Done():
 		_ = stream.Reset()
 		return ctx.Err()
@@ -249,9 +249,6 @@ func (s *Connection) Go(run func(context.Context) error) error {
 }
 
 func (s *Connection) fail(err error) {
-	if err == nil {
-		return
-	}
 	select {
 	case s.fatal <- err:
 	default:
@@ -268,11 +265,6 @@ func (s *Connection) Close() error {
 // Closed is closed when the connection context is canceled.
 func (s *Connection) Closed() <-chan struct{} {
 	return s.ctx.Done()
-}
-
-// Codec returns the codec used by the connection.
-func (s *Connection) Codec() Codec {
-	return s.codec
 }
 
 func (s *Connection) beginWork() bool {
@@ -294,7 +286,9 @@ func (s *Connection) shutdown() {
 	s.state = connectionClosing
 	s.mu.Unlock()
 	s.cancel()
-	_ = s.spdyConn.Close()
+	// Shutdown cancels active work, including RPC readers waiting for a peer.
+	// Closing the transport lets SPDY release them without waiting for peer FIN.
+	_ = s.transport.Close()
 }
 
 func (s *Connection) serveRPC(stream httpstream.Stream) {
@@ -302,38 +296,41 @@ func (s *Connection) serveRPC(stream httpstream.Stream) {
 	defer stream.Close()
 
 	request := rpcRequest{}
-	if err := s.codec.Decode(stream, &request); err != nil {
+	if err := json.NewDecoder(stream).
+		Decode(&request); err != nil {
 		if err != io.EOF {
-			_ = s.codec.Encode(stream, newRPCErrorResponse(err))
+			_ = json.NewEncoder(stream).
+				Encode(newRPCErrorResponse(err))
 		}
 		return
 	}
 
 	handler := s.handlers[request.Method]
 	if handler == nil {
-		_ = s.codec.Encode(stream, newRPCErrorResponse(
-			fmt.Errorf("unsupported RPC method %q", request.Method),
-		))
+		_ = json.NewEncoder(stream).
+			Encode(newRPCErrorResponse(fmt.Errorf("unsupported RPC method %q", request.Method)))
 		return
 	}
 	payload, err := handler.Handle(s.ctx, request.Payload)
 	if err != nil {
-		_ = s.codec.Encode(stream, newRPCErrorResponse(err))
+		_ = json.NewEncoder(stream).
+			Encode(newRPCErrorResponse(err))
 		return
 	}
-	response, err := newRPCResponse(s.codec, payload)
+	response, err := newRPCResponse(payload)
 	if err != nil {
 		response = newRPCErrorResponse(err)
 	}
-	_ = s.codec.Encode(stream, response)
+	_ = json.NewEncoder(stream).
+		Encode(response)
 }
 
-func newRPCResponse(codec Codec, payload any) (rpcResponse, error) {
+func newRPCResponse(payload any) (rpcResponse, error) {
 	response := rpcResponse{OK: true}
 	if payload == nil {
 		return response, nil
 	}
-	data, err := encodePayload(codec, payload)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return rpcResponse{}, err
 	}

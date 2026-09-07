@@ -68,16 +68,19 @@ kubeSsh:
     path: /usr/local/bin/kube-ssh-helper
     remoteDir: /tmp
 
-  backend:
-    # kubernetes uses pods/exec and pods/portforward through the apiserver.
-    # node sends data directly to the node-local CRI data plane.
-    mode: kubernetes
-    node:
+  managed:
+    # apiserver uses pods/exec and pods/portforward.
+    # cri sends data through the node-local CRI data plane.
+    transport: apiserver
+    cri:
       port: 10443
       serverName: ""
 
+  externalSSH:
+    # Maximum time for TCP dial plus the upstream SSH handshake.
+    connectTimeout: 30s
+
   node:
-    enabled: false
     # Checked in order. Leave empty to probe common containerd, CRI-O, K3s,
     # K0s, and cri-dockerd sockets below the mounted host /run directory.
     runtimeEndpoints: []
@@ -101,7 +104,7 @@ kubeSsh:
   policy:
     defaults:
       containerMode: KubernetesDefault
-      capabilities: ["*"]
+      capabilities: ["shell", "exec", "scp", "sftp", "local_forward", "remote_forward", "agent_forward"]
       envAllowlist: ["*"]
       localForwardDestinations: ["*"]
       remoteForwardBinds: ["*"]

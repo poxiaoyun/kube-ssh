@@ -7,7 +7,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
@@ -15,7 +14,7 @@ import (
 
 const defaultAffinityTimeout = time.Hour
 
-type StrategySelector struct {
+type strategySelector struct {
 	mu          sync.Mutex
 	roundRobin  map[string]int
 	connections map[string]int
@@ -23,8 +22,19 @@ type StrategySelector struct {
 }
 
 type affinityEntry struct {
-	backendKey string
-	expiresAt  time.Time
+	targetKey string
+	expiresAt time.Time
+}
+
+type targetCandidate struct {
+	key       string
+	weight    int
+	createdAt time.Time
+}
+
+type targetSelection struct {
+	index   int
+	release func()
 }
 
 type podSelection struct {
@@ -32,133 +42,196 @@ type podSelection struct {
 	release func()
 }
 
-func NewStrategySelector() *StrategySelector {
-	return &StrategySelector{
+type endpointSelection struct {
+	endpoint sshv1.AccessEndpoint
+	release  func()
+}
+
+func newStrategySelector() *strategySelector {
+	return &strategySelector{
 		roundRobin:  map[string]int{},
 		connections: map[string]int{},
 		affinity:    map[string]affinityEntry{},
 	}
 }
 
-func (s *StrategySelector) SelectPod(access *sshv1.Access, pods []corev1.Pod, req target.ResolveRequest) (podSelection, bool) {
-	candidates := candidatePods(pods)
-	if len(candidates) == 0 {
+func (s *strategySelector) selectPod(access *sshv1.Access, pods []corev1.Pod, req target.ResolveInput) (podSelection, bool) {
+	pods = candidatePods(pods)
+	if len(pods) == 0 {
 		return podSelection{}, false
 	}
-	if s == nil {
-		s = NewStrategySelector()
+	candidates := make([]targetCandidate, len(pods))
+	for i, pod := range pods {
+		candidates[i] = targetCandidate{
+			key:       podTargetKey(access.Namespace, pod),
+			weight:    podWeight(access, pod),
+			createdAt: pod.CreationTimestamp.Time,
+		}
 	}
-	key := accessKey(access.Namespace, access.Name)
+	selection := s.selectTarget(access, req, candidates, strategyType(access))
+	return podSelection{pod: pods[selection.index], release: selection.release}, true
+}
+
+// selectPodByName bypasses strategy and affinity but tracks the connection so
+// LeastConnections observes explicitly selected Pods.
+func (s *strategySelector) selectPodByName(access *sshv1.Access, pods []corev1.Pod, name string) (podSelection, bool) {
+	for _, pod := range activePods(pods) {
+		if pod.Name == name {
+			selection := s.trackTarget(accessKey(access.Namespace, access.Name), podTargetKey(access.Namespace, pod), 0)
+			return podSelection{pod: pod, release: selection.release}, true
+		}
+	}
+	return podSelection{}, false
+}
+
+func (s *strategySelector) selectEndpoint(access *sshv1.Access, req target.ResolveInput) (endpointSelection, bool) {
+	if len(access.Spec.Endpoints) == 0 {
+		return endpointSelection{}, false
+	}
+	endpoints := append([]sshv1.AccessEndpoint(nil), access.Spec.Endpoints...)
+	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].Name < endpoints[j].Name })
+	candidates := make([]targetCandidate, len(endpoints))
+	for i, endpoint := range endpoints {
+		candidates[i] = targetCandidate{key: endpoint.Name, weight: endpointWeight(endpoint)}
+	}
+	selection := s.selectTarget(access, req, candidates, endpointStrategyType(access))
+	return endpointSelection{endpoint: endpoints[selection.index], release: selection.release}, true
+}
+
+func (s *strategySelector) selectTarget(access *sshv1.Access, req target.ResolveInput, candidates []targetCandidate, strategy sshv1.AccessStrategyType) targetSelection {
+	accessKeyValue := accessKey(access.Namespace, access.Name)
+	affinityKey := accessAffinityKey(access, req)
 	now := time.Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if pod, ok := s.affinityPodLocked(access, candidates, req, now); ok {
-		return s.trackPodLocked(key, access.Namespace, pod), true
+	if index, found := s.affinityCandidateIndex(affinityKey, candidates, now); found {
+		return s.trackTargetLocked(accessKeyValue, candidates[index].key, index)
 	}
 
-	var pod corev1.Pod
-	switch strategyType(access) {
+	var index int
+	switch strategy {
 	case sshv1.AccessStrategyTypeRoundRobin:
-		pod = s.roundRobinPodLocked(key, access, candidates)
+		index = s.roundRobinCandidateIndex(accessKeyValue, candidates)
 	case sshv1.AccessStrategyTypeLeastConnections:
-		pod = s.leastConnectionsPodLocked(access, candidates)
+		index = s.leastConnectionsCandidateIndex(accessKeyValue, candidates)
 	case sshv1.AccessStrategyTypeNewest:
-		pod = newestPod(candidates)
+		index = newestCandidateIndex(candidates)
 	case sshv1.AccessStrategyTypeOldest:
-		pod = oldestPod(candidates)
+		index = oldestCandidateIndex(candidates)
 	default:
-		pod = randomPod(access, candidates)
+		index = randomCandidateIndex(candidates)
 	}
-	if affinityKey := accessAffinityKey(access, req); affinityKey != "" {
+	if affinityKey != "" {
 		s.affinity[affinityKey] = affinityEntry{
-			backendKey: podBackendKey(access.Namespace, pod),
-			expiresAt:  now.Add(affinityTimeout(access)),
+			targetKey: candidates[index].key,
+			expiresAt: now.Add(affinityTimeout(access)),
 		}
 	}
-	return s.trackPodLocked(key, access.Namespace, pod), true
+	return s.trackTargetLocked(accessKeyValue, candidates[index].key, index)
 }
 
-// SelectPodByName selects an explicitly requested active Pod. Explicit
-// selections bypass strategy and session affinity, but are tracked so that
-// LeastConnections observes all active connections.
-func (s *StrategySelector) SelectPodByName(access *sshv1.Access, pods []corev1.Pod, name string) (podSelection, bool) {
-	for _, pod := range activePods(pods) {
-		if pod.Name != name {
-			continue
-		}
-		if s == nil {
-			s = NewStrategySelector()
-		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.trackPodLocked(accessKey(access.Namespace, access.Name), access.Namespace, pod), true
-	}
-	return podSelection{}, false
-}
-
-func (s *StrategySelector) affinityPodLocked(access *sshv1.Access, candidates []corev1.Pod, req target.ResolveRequest, now time.Time) (corev1.Pod, bool) {
-	affinityKey := accessAffinityKey(access, req)
+func (s *strategySelector) affinityCandidateIndex(affinityKey string, candidates []targetCandidate, now time.Time) (int, bool) {
 	if affinityKey == "" {
-		return corev1.Pod{}, false
+		return 0, false
 	}
-	entry, ok := s.affinity[affinityKey]
-	if !ok {
-		return corev1.Pod{}, false
+	entry, found := s.affinity[affinityKey]
+	if !found {
+		return 0, false
 	}
 	if !entry.expiresAt.IsZero() && now.After(entry.expiresAt) {
 		delete(s.affinity, affinityKey)
-		return corev1.Pod{}, false
+		return 0, false
 	}
-	for _, pod := range candidates {
-		if podBackendKey(access.Namespace, pod) == entry.backendKey {
-			return pod, true
+	for i, candidate := range candidates {
+		if candidate.key == entry.targetKey {
+			return i, true
 		}
 	}
 	delete(s.affinity, affinityKey)
-	return corev1.Pod{}, false
+	return 0, false
 }
 
-func (s *StrategySelector) roundRobinPodLocked(key string, access *sshv1.Access, candidates []corev1.Pod) corev1.Pod {
-	total := totalPodWeight(access, candidates)
-	if total <= 0 {
-		return candidates[0]
-	}
-	idx := s.roundRobin[key] % total
-	s.roundRobin[key] = s.roundRobin[key] + 1
-	for _, pod := range candidates {
-		weight := podWeight(access, pod)
-		if idx < weight {
-			return pod
-		}
-		idx -= weight
-	}
-	return candidates[0]
+func (s *strategySelector) roundRobinCandidateIndex(key string, candidates []targetCandidate) int {
+	index := s.roundRobin[key] % totalCandidateWeight(candidates)
+	s.roundRobin[key]++
+	return weightedCandidateIndex(candidates, index)
 }
 
-func (s *StrategySelector) leastConnectionsPodLocked(access *sshv1.Access, candidates []corev1.Pod) corev1.Pod {
-	best := candidates[0]
-	for _, pod := range candidates[1:] {
-		if podConnectionLess(access, pod, best, s.connections) {
-			best = pod
+func (s *strategySelector) leastConnectionsCandidateIndex(accessKeyValue string, candidates []targetCandidate) int {
+	best := 0
+	for i := 1; i < len(candidates); i++ {
+		left := s.connections[targetConnectionKey(accessKeyValue, candidates[i].key)] * candidates[best].weight
+		right := s.connections[targetConnectionKey(accessKeyValue, candidates[best].key)] * candidates[i].weight
+		if left < right || (left == right && candidates[i].key < candidates[best].key) {
+			best = i
 		}
 	}
 	return best
 }
 
-func (s *StrategySelector) trackPodLocked(accessKeyValue, namespace string, pod corev1.Pod) podSelection {
-	backendKey := podBackendKey(namespace, pod)
-	connectionKey := accessKeyValue + "\x00" + backendKey
+func randomCandidateIndex(candidates []targetCandidate) int {
+	return weightedCandidateIndex(candidates, rand.Intn(totalCandidateWeight(candidates)))
+}
+
+func weightedCandidateIndex(candidates []targetCandidate, weightIndex int) int {
+	for i, candidate := range candidates {
+		if weightIndex < candidate.weight {
+			return i
+		}
+		weightIndex -= candidate.weight
+	}
+	return 0
+}
+
+func totalCandidateWeight(candidates []targetCandidate) int {
+	total := 0
+	for _, candidate := range candidates {
+		total += candidate.weight
+	}
+	return total
+}
+
+func newestCandidateIndex(candidates []targetCandidate) int {
+	best := 0
+	for i := 1; i < len(candidates); i++ {
+		if candidates[i].createdAt.After(candidates[best].createdAt) ||
+			(candidates[i].createdAt.Equal(candidates[best].createdAt) && candidates[i].key < candidates[best].key) {
+			best = i
+		}
+	}
+	return best
+}
+
+func oldestCandidateIndex(candidates []targetCandidate) int {
+	best := 0
+	for i := 1; i < len(candidates); i++ {
+		if candidates[i].createdAt.Before(candidates[best].createdAt) ||
+			(candidates[i].createdAt.Equal(candidates[best].createdAt) && candidates[i].key < candidates[best].key) {
+			best = i
+		}
+	}
+	return best
+}
+
+func (s *strategySelector) trackTarget(accessKeyValue, targetKey string, index int) targetSelection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trackTargetLocked(accessKeyValue, targetKey, index)
+}
+
+func (s *strategySelector) trackTargetLocked(accessKeyValue, targetKey string, index int) targetSelection {
+	connectionKey := targetConnectionKey(accessKeyValue, targetKey)
 	s.connections[connectionKey]++
 	var once sync.Once
-	return podSelection{
-		pod: pod,
+	return targetSelection{
+		index: index,
 		release: func() {
 			once.Do(func() {
 				s.mu.Lock()
 				defer s.mu.Unlock()
-				if s.connections[connectionKey] <= 1 {
+				if s.connections[connectionKey] == 1 {
 					delete(s.connections, connectionKey)
 					return
 				}
@@ -166,6 +239,10 @@ func (s *StrategySelector) trackPodLocked(accessKeyValue, namespace string, pod 
 			})
 		},
 	}
+}
+
+func targetConnectionKey(accessKeyValue, targetKey string) string {
+	return accessKeyValue + "\x00" + targetKey
 }
 
 func candidatePods(pods []corev1.Pod) []corev1.Pod {
@@ -176,12 +253,11 @@ func candidatePods(pods []corev1.Pod) []corev1.Pod {
 			ready = append(ready, pod)
 		}
 	}
-	candidates := active
 	if len(ready) > 0 {
-		candidates = ready
+		active = ready
 	}
-	sortPods(candidates)
-	return candidates
+	sortPods(active)
+	return active
 }
 
 func activePods(pods []corev1.Pod) []corev1.Pod {
@@ -214,72 +290,8 @@ func sortPods(pods []corev1.Pod) {
 	})
 }
 
-func newestPod(pods []corev1.Pod) corev1.Pod {
-	out := append([]corev1.Pod(nil), pods...)
-	sort.Slice(out, func(i, j int) bool {
-		it := podCreationTime(out[i])
-		jt := podCreationTime(out[j])
-		if !it.Equal(&jt) {
-			return jt.Before(&it)
-		}
-		return podBackendKey(out[i].Namespace, out[i]) < podBackendKey(out[j].Namespace, out[j])
-	})
-	return out[0]
-}
-
-func oldestPod(pods []corev1.Pod) corev1.Pod {
-	out := append([]corev1.Pod(nil), pods...)
-	sort.Slice(out, func(i, j int) bool {
-		it := podCreationTime(out[i])
-		jt := podCreationTime(out[j])
-		if !it.Equal(&jt) {
-			return it.Before(&jt)
-		}
-		return podBackendKey(out[i].Namespace, out[i]) < podBackendKey(out[j].Namespace, out[j])
-	})
-	return out[0]
-}
-
-func randomPod(access *sshv1.Access, pods []corev1.Pod) corev1.Pod {
-	total := totalPodWeight(access, pods)
-	if total <= 0 {
-		return pods[rand.Intn(len(pods))]
-	}
-	idx := rand.Intn(total)
-	for _, pod := range pods {
-		weight := podWeight(access, pod)
-		if idx < weight {
-			return pod
-		}
-		idx -= weight
-	}
-	return pods[0]
-}
-
-func podConnectionLess(access *sshv1.Access, a, b corev1.Pod, connections map[string]int) bool {
-	accessKeyValue := accessKey(access.Namespace, access.Name)
-	aWeight := podWeight(access, a)
-	bWeight := podWeight(access, b)
-	aConnections := connections[accessKeyValue+"\x00"+podBackendKey(access.Namespace, a)]
-	bConnections := connections[accessKeyValue+"\x00"+podBackendKey(access.Namespace, b)]
-	left := aConnections * bWeight
-	right := bConnections * aWeight
-	if left != right {
-		return left < right
-	}
-	return podBackendKey(access.Namespace, a) < podBackendKey(access.Namespace, b)
-}
-
-func totalPodWeight(access *sshv1.Access, pods []corev1.Pod) int {
-	total := 0
-	for _, pod := range pods {
-		total += podWeight(access, pod)
-	}
-	return total
-}
-
 func podWeight(access *sshv1.Access, pod corev1.Pod) int {
-	if access == nil || access.Spec.Strategy == nil {
+	if access.Spec.Strategy == nil {
 		return 1
 	}
 	for _, weight := range access.Spec.Strategy.Weights {
@@ -293,6 +305,13 @@ func podWeight(access *sshv1.Access, pod corev1.Pod) int {
 	return 1
 }
 
+func endpointWeight(endpoint sshv1.AccessEndpoint) int {
+	if endpoint.Weight == nil {
+		return 1
+	}
+	return int(*endpoint.Weight)
+}
+
 func selectorMatches(selector, values map[string]string) bool {
 	if len(selector) == 0 {
 		return true
@@ -301,20 +320,28 @@ func selectorMatches(selector, values map[string]string) bool {
 }
 
 func strategyType(access *sshv1.Access) sshv1.AccessStrategyType {
-	if access == nil || access.Spec.Strategy == nil || access.Spec.Strategy.Type == "" {
+	if access.Spec.Strategy == nil || access.Spec.Strategy.Type == "" {
 		return sshv1.AccessStrategyTypeRandom
 	}
 	return access.Spec.Strategy.Type
 }
 
-func accessAffinityKey(access *sshv1.Access, req target.ResolveRequest) string {
-	if access == nil || access.Spec.Strategy == nil || access.Spec.Strategy.SessionAffinity == nil {
+func endpointStrategyType(access *sshv1.Access) sshv1.AccessStrategyType {
+	strategy := strategyType(access)
+	if strategy == sshv1.AccessStrategyTypeRoundRobin || strategy == sshv1.AccessStrategyTypeLeastConnections {
+		return strategy
+	}
+	return sshv1.AccessStrategyTypeRandom
+}
+
+func accessAffinityKey(access *sshv1.Access, req target.ResolveInput) string {
+	if access.Spec.Strategy == nil || access.Spec.Strategy.SessionAffinity == nil {
 		return ""
 	}
 	var value string
 	switch access.Spec.Strategy.SessionAffinity.Type {
 	case sshv1.AccessSessionAffinityTypeUser:
-		value = req.User.Name
+		value = req.UserName
 	case sshv1.AccessSessionAffinityTypeCredential:
 		value = GetExtra(req.AuthExtra, ExtraCredentialUser)
 	case sshv1.AccessSessionAffinityTypeSourceIP:
@@ -331,19 +358,15 @@ func accessAffinityKey(access *sshv1.Access, req target.ResolveRequest) string {
 }
 
 func affinityTimeout(access *sshv1.Access) time.Duration {
-	if access == nil || access.Spec.Strategy == nil || access.Spec.Strategy.SessionAffinity == nil || access.Spec.Strategy.SessionAffinity.TimeoutSeconds == nil {
+	if access.Spec.Strategy == nil || access.Spec.Strategy.SessionAffinity == nil || access.Spec.Strategy.SessionAffinity.TimeoutSeconds == nil {
 		return defaultAffinityTimeout
 	}
 	return time.Duration(*access.Spec.Strategy.SessionAffinity.TimeoutSeconds) * time.Second
 }
 
-func podBackendKey(namespace string, pod corev1.Pod) string {
+func podTargetKey(namespace string, pod corev1.Pod) string {
 	if pod.Namespace != "" {
 		namespace = pod.Namespace
 	}
 	return namespace + "/" + pod.Name
-}
-
-func podCreationTime(pod corev1.Pod) metav1.Time {
-	return pod.CreationTimestamp
 }

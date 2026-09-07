@@ -1,24 +1,25 @@
+// Package version exposes linker-supplied process build information.
 package version
 
 import "fmt"
 
 var (
-	GitVersion = "dev"
-	GitCommit  = "unknown"
-	BuildDate  = "unknown"
+	gitVersion = "dev"
+	gitCommit  = "unknown"
+	buildDate  = "unknown"
 )
 
 type Info struct {
-	GitVersion string `json:"gitVersion"`
-	GitCommit  string `json:"gitCommit"`
-	BuildDate  string `json:"buildDate"`
+	GitVersion string
+	GitCommit  string
+	BuildDate  string
 }
 
 func Get() Info {
 	return Info{
-		GitVersion: GitVersion,
-		GitCommit:  GitCommit,
-		BuildDate:  BuildDate,
+		GitVersion: gitVersion,
+		GitCommit:  gitCommit,
+		BuildDate:  buildDate,
 	}
 }
 

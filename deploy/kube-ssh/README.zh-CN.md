@@ -1,6 +1,7 @@
 # kube-ssh
 
-kube-ssh 为 Kubernetes Pod 提供统一的 SSH 访问入口。安装后，使用 Access 资源选择允许访问的 Pod，并通过 SSH 公钥授权用户。
+kube-ssh 为不运行 `sshd` 的 Kubernetes 容器和已经提供完整 SSH 服务的
+目标提供统一 SSH 入口。Access 资源负责选择目标，并定义入站凭据和操作策略。
 
 ## 对外访问地址
 
@@ -40,9 +41,9 @@ Service 默认为 `NodePort`，端口为 `30022`。可根据集群网络环境�
 
 Chart 会自动生成 Ed25519 主机密钥并保存到 Secret，Pod 重启和升级不会改变 SSH 指纹。如需复用统一管理的密钥，可设置 `kubeSsh.hostKey.existingSecret`；Secret 中必须包含 `kubeSsh.hostKey.secretKey` 指定的键。运维也可以通过 `kubeSsh.hostKey.privateKey` 直接传入私钥。优先级依次为 `existingSecret`、`privateKey`、自动生成。设置 `kubeSsh.hostKey.autoGenerate=false` 可禁用主机密钥管理，由网关使用临时密钥。静态 `deploy/install.yaml` 会主动使用该配置，避免向所有用户分发同一私钥。
 
-## Node 数据面
+## Pod SSH Node 数据面
 
-设置 `kubeSsh.backend.mode=node` 后，Chart 会在每个 Linux 节点部署
+设置 `kubeSsh.managed.transport=cri` 后，Chart 会在每个 Linux 节点部署
 `kube-ssh-node`。SSH 大流量从网关通过 mTLS 直连目标节点的 `10443`
 端口，再由 Node 组件使用 CRI v1 streaming 连接容器；apiserver 仅承载 Pod
 查询/监听、Access 策略、Secret 监听和 SubjectAccessReview。Node 组件不可用时
@@ -61,3 +62,13 @@ Gateway 客户端共用这套证书；证书 SAN 必须覆盖配置的 Node serv
 common name 必须与 `kubeSsh.node.expectedClientName` 一致。Node 进程会动态
 加载挂载文件中的服务端证书和客户端 CA，轮换后新连接无需重启 DaemonSet
 即可使用新凭据。
+
+## SSH Proxy
+
+`spec.type: External` 的 Access 会把完整 SSH 协议代理到已有 sshd。
+上游可以位于 Pod、集群内其他位置或任何可达主机，所在位置不改变代理语义。
+每个 endpoint 直接配置 `address`、`port`、上游 `username`、网关显式配置的凭据和
+固定的主机公钥。集群内 Service 也直接把 DNS 名写入 `address`，没有单独的 Service 字段；
+入站用户的密码或密钥不会作为上游凭据，也不会在网关凭据缺失时回退使用。
+connector 只接受普通 DNS 名称或 IP，并把连接绑定到选中的 endpoint；部署级出站
+可达性限制由集群 NetworkPolicy 负责。

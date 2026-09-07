@@ -1,3 +1,4 @@
+// Package authn authenticates inbound SSH credentials.
 package authn
 
 import (
@@ -6,6 +7,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
 // ErrNotProvided is returned when an authenticator cannot make a decision.
@@ -25,48 +27,28 @@ type UserInfo struct {
 	Extra         map[string][]string `json:"extra,omitempty"`
 }
 
-// TargetHint is an optional target locator returned by authentication.
-//
-// Authenticators may use credentials to suggest default or preferred targets
-// (for example, a public key bound to a developer pod). A hint is not an
-// authorization decision. The target resolver decides whether and how to use
-// hints together with the SSH username and authenticated identity.
-//
-// This type intentionally mirrors the generic target shape without importing
-// the target package, so authentication and target resolution remain decoupled.
-type TargetHint struct {
-	Kind    string              `json:"kind,omitempty"`
-	Options []TargetHintOption  `json:"options,omitempty"`
-	Extra   map[string][]string `json:"extra,omitempty"`
-}
-
-type TargetHintOption struct {
-	Key   string `json:"key,omitempty"`
-	Value string `json:"value,omitempty"`
-}
-
 // AuthenticateInfo is the authentication result.
 // Method should be a stable value such as "anonymous", "publickey",
 // "password", "webhook", or an implementation-specific method name.
 type AuthenticateInfo struct {
-	User        UserInfo            `json:"user"`
-	Method      string              `json:"method"`
-	TargetHints []TargetHint        `json:"targetHints,omitempty"`
-	Extra       map[string][]string `json:"extra,omitempty"`
+	User        UserInfo
+	Method      string
+	TargetHints []target.Hint
+	Extra       map[string][]string
 }
 
 // AuthorizedKeyEntry associates a user identity with one OpenSSH authorized_keys line.
 type AuthorizedKeyEntry struct {
-	Subject   string   `json:"subject"`
-	PublicKey string   `json:"publicKey"`
-	Groups    []string `json:"groups,omitempty"`
+	Subject   string
+	PublicKey string
+	Groups    []string
 }
 
 // PasswordEntry associates a user identity with a static password.
 type PasswordEntry struct {
-	Subject  string   `json:"subject"`
-	Password string   `json:"password"`
-	Groups   []string `json:"groups,omitempty"`
+	Subject  string
+	Password string
+	Groups   []string
 }
 
 // ParseAuthorizedKeyEntry parses "subject=authorized_keys line".

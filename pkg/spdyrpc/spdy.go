@@ -10,16 +10,6 @@ import (
 
 const defaultCreateStreamResponseTimeout = 30 * time.Second
 
-// ConnectionOptions configures an RPC connection.
-type ConnectionOptions struct {
-	// Codec encodes RPC envelopes and payloads. Nil uses JSONCodec.
-	Codec Codec
-
-	// CreateStreamResponseTimeout limits how long a locally created stream waits
-	// for the peer to accept or reject it. Zero uses the default timeout.
-	CreateStreamResponseTimeout time.Duration
-}
-
 // CreateStream creates a stream and waits for the peer reply.
 func (s *Connection) CreateStream(headers http.Header) (httpstream.Stream, error) {
 	stream, err := s.spdyConn.CreateStream(headers, nil, false)
@@ -33,7 +23,8 @@ func (s *Connection) CreateStream(headers http.Header) (httpstream.Stream, error
 }
 
 func (s *Connection) newSPDYStream(stream *spdystream.Stream) {
-	streamType := stream.Headers().Get(StreamTypeHeader)
+	streamType := stream.Headers().
+		Get(StreamTypeHeader)
 	switch streamType {
 	case StreamTypeControl:
 		s.handleRPCStream(stream)

@@ -1,63 +1,75 @@
+// Package target resolves authenticated SSH connections to destinations.
 package target
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
-	"xiaoshiai.cn/kube-ssh/pkg/authn"
-	"xiaoshiai.cn/kube-ssh/pkg/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+)
+
+const (
+	// KindPod identifies a Kubernetes Pod/container destination.
+	KindPod = "kube"
+	// KindExternalSSH identifies an upstream SSH server destination.
+	KindExternalSSH = "ssh"
 )
 
 // ErrNotProvided is returned when a resolver cannot resolve the request but
 // another resolver in a chain may be able to.
 var ErrNotProvided = errors.New("target resolution not provided")
 
-// Target identifies a backend-specific execution target.
+// Target identifies a connection destination selected by a resolver.
 //
 // A target is the destination of the SSH connection, such as a Kubernetes
-// workload instance. It is intentionally separate from authn.UserInfo, which
-// identifies the caller.
+// workload instance. It is intentionally separate from the authenticated
+// caller identity.
 type Target struct {
-	Kind    string     `json:"kind,omitempty"`
-	Options []KeyValue `json:"options,omitempty"`
+	Kind    string
+	Options []Option
 
-	release func()
-	runtime map[string]string
+	// Runtime contains trusted connection-scoped bindings produced by the resolver.
+	Runtime map[string]string
 }
 
-type KeyValue struct {
-	Key   string `json:"key,omitempty"`
-	Value string `json:"value,omitempty"`
+// Option is one ordered component of a target locator.
+type Option struct {
+	Key   string
+	Value string
 }
 
-// ResolveRequest describes the authenticated SSH connection being mapped to a
-// backend target.
+// Hint is a candidate target locator returned by authentication.
+type Hint struct {
+	Kind    string
+	Options []Option
+	// Aliases are SSH usernames that select this hint when several are present.
+	Aliases []string
+}
+
+// ResolveInput describes the authenticated SSH connection being mapped to a
+// connection target.
 //
 // SSHUser is the raw SSH login name. kube-ssh treats it primarily as a target
-// locator because SSH has no better client-compatible field for backend
-// selection. More advanced resolvers may combine SSHUser with User, AuthMethod,
-// PublicKeyFingerprint, and TargetHints to resolve aliases or credential-bound
-// default targets.
-type ResolveRequest struct {
+// locator because SSH has no better client-compatible field for target
+// selection. Resolvers may combine it with the authenticated user, source, and
+// authentication-owned attributes.
+type ResolveInput struct {
 	// SSHUser is the target locator derived from the SSH username.
 	SSHUser string
-	// User is the authenticated caller identity.
-	User authn.UserInfo
-	// AuthMethod is the method reported by the authenticator.
-	AuthMethod string
+	// UserName is the stable authenticated caller name.
+	UserName string
 	// AuthExtra carries authenticator-specific context.
 	AuthExtra map[string][]string
-	// PublicKeyFingerprint is set for public-key authentication.
-	PublicKeyFingerprint string
 	// SourceIP is the peer IP address observed by the kube-ssh gateway. In
 	// Kubernetes deployments this may be a node, load balancer, proxy, or NAT
 	// address rather than the real SSH client IP, so resolvers should treat it as
 	// a best-effort affinity hint instead of a stable caller identity.
 	SourceIP string
-	// TargetHints are optional locator hints returned by authentication.
-	TargetHints []authn.TargetHint
+	// Hints are optional target locators returned by authentication.
+	Hints []Hint
 }
 
 // Resolver maps an authenticated SSH connection to exactly one Target.
@@ -67,26 +79,24 @@ type ResolveRequest struct {
 // allowed to perform a capability on the resolved target; that is the
 // authorizer's responsibility.
 type Resolver interface {
-	Resolve(ctx context.Context, req ResolveRequest) (*Target, error)
+	// Resolve maps input to exactly one connection target.
+	Resolve(ctx context.Context, input ResolveInput) (*Target, error)
 }
 
 type Chain []Resolver
 
-func (c Chain) Resolve(ctx context.Context, req ResolveRequest) (*Target, error) {
+func (c Chain) Resolve(ctx context.Context, input ResolveInput) (*Target, error) {
 	var lastErr error
 	for _, resolver := range c {
-		if resolver == nil {
-			continue
-		}
-		tgt, err := resolver.Resolve(ctx, req)
-		if err == nil {
-			return tgt, nil
-		}
-		if errors.Is(err, ErrNotProvided) {
+		tgt, err := resolver.Resolve(ctx, input)
+		if err != nil {
+			if !errors.Is(err, ErrNotProvided) {
+				return nil, err
+			}
 			lastErr = err
 			continue
 		}
-		return nil, err
+		return tgt, nil
 	}
 	if lastErr != nil {
 		return nil, lastErr
@@ -94,49 +104,42 @@ func (c Chain) Resolve(ctx context.Context, req ResolveRequest) (*Target, error)
 	return nil, ErrNotProvided
 }
 
-// TargetHintResolver resolves targets suggested by authentication.
-type TargetHintResolver struct{}
+// HintResolver resolves targets suggested by authentication.
+type HintResolver struct{}
 
-func NewTargetHintResolver() *TargetHintResolver { return &TargetHintResolver{} }
-
-func (r *TargetHintResolver) Resolve(_ context.Context, req ResolveRequest) (*Target, error) {
-	if len(req.TargetHints) == 0 {
+func (HintResolver) Resolve(_ context.Context, input ResolveInput) (*Target, error) {
+	if len(input.Hints) == 0 {
 		return nil, ErrNotProvided
 	}
-	if req.SSHUser != "" {
-		for _, hint := range req.TargetHints {
-			if hintMatchesSSHUser(hint, req.SSHUser) {
-				return TargetFromHint(hint)
+	if input.SSHUser != "" {
+		for _, hint := range input.Hints {
+			if slices.Contains(hint.Aliases, input.SSHUser) {
+				return newTargetFromHint(hint)
 			}
 		}
 	}
-	if len(req.TargetHints) == 1 {
-		return TargetFromHint(req.TargetHints[0])
+	if len(input.Hints) == 1 {
+		return newTargetFromHint(input.Hints[0])
 	}
-	return nil, status.InvalidTarget("target alias %q did not match any authentication target hint", req.SSHUser)
+	return nil, apierrors.NewBadRequest(fmt.Sprintf("target alias %q did not match any authentication target hint", input.SSHUser))
 }
 
-func hintMatchesSSHUser(hint authn.TargetHint, sshUser string) bool {
-	return slices.Contains(hint.Extra["aliases"], sshUser) || slices.Contains(hint.Extra["names"], sshUser)
-}
-
-func TargetFromHint(hint authn.TargetHint) (*Target, error) {
+func newTargetFromHint(hint Hint) (*Target, error) {
 	if hint.Kind == "" {
-		return nil, status.InvalidTarget("target hint kind is required")
+		return nil, apierrors.NewBadRequest("target hint kind is required")
 	}
-	options := make([]KeyValue, 0, len(hint.Options))
 	for _, option := range hint.Options {
 		if option.Key == "" || option.Value == "" {
-			return nil, status.InvalidTarget("target hint option requires key and value")
+			return nil, apierrors.NewBadRequest("target hint option requires key and value")
 		}
-		options = append(options, KeyValue{Key: option.Key, Value: option.Value})
 	}
-	if len(options) == 0 {
-		return nil, status.InvalidTarget("target hint %q requires options", hint.Kind)
+	if len(hint.Options) == 0 {
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("target hint %q requires options", hint.Kind))
 	}
-	return &Target{Kind: hint.Kind, Options: options}, nil
+	return &Target{Kind: hint.Kind, Options: hint.Options}, nil
 }
 
+// Option returns the value of the first locator option with the given key.
 func (t Target) Option(key string) string {
 	for _, option := range t.Options {
 		if option.Key == key {
@@ -146,26 +149,8 @@ func (t Target) Option(key string) string {
 	return ""
 }
 
-// RuntimeValue returns resolver-owned metadata that must not be accepted from
-// an untrusted target hint or included in the target's stable external form.
-func (t Target) RuntimeValue(key string) string {
-	return t.runtime[key]
-}
-
-// WithRuntimeValue attaches trusted, connection-scoped resolution metadata.
-// Backends use this to bind a resolved name to the exact workload instance.
-func WithRuntimeValue(t *Target, key, value string) *Target {
-	if t == nil || key == "" || value == "" {
-		return t
-	}
-	if t.runtime == nil {
-		t.runtime = map[string]string{}
-	}
-	t.runtime[key] = value
-	return t
-}
-
-func (t Target) ToPath() string {
+// String returns the canonical target locator path.
+func (t Target) String() string {
 	var path strings.Builder
 	path.WriteString(t.Kind)
 	for _, option := range t.Options {
@@ -175,23 +160,4 @@ func (t Target) ToPath() string {
 		path.WriteString(option.Value)
 	}
 	return path.String()
-}
-
-// WithRelease attaches a callback that is invoked when the SSH connection using
-// this target is closed.
-func WithRelease(t *Target, release func()) *Target {
-	if t != nil {
-		t.release = release
-	}
-	return t
-}
-
-// Release releases resolver-owned state associated with this target.
-func (t *Target) Release() {
-	if t == nil || t.release == nil {
-		return
-	}
-	release := t.release
-	t.release = nil
-	release()
 }

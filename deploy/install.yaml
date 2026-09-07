@@ -33,9 +33,9 @@ spec:
           external endpoints.
 
           The resource is intentionally workload-local: application owners can ship it
-          beside a Deployment, StatefulSet, Pod, or service-like manifest. Credentials
-          may contain plaintext passwords; cluster RBAC around this CRD is therefore a
-          security boundary.
+          beside a Deployment, StatefulSet, Pod, or service-like manifest.
+          Authentication material may contain plaintext passwords; cluster RBAC around
+          this CRD is therefore a security boundary.
         properties:
           apiVersion:
             description: |-
@@ -106,6 +106,7 @@ spec:
                             - local_forward
                             - remote_forward
                             - agent_forward
+                            - ssh_extension
                             type: string
                           type: array
                           x-kubernetes-list-type: set
@@ -123,7 +124,7 @@ spec:
 
                                 An asterisk matches any sequence of characters; "*" allows every value.
 
-                                Empty means any destination accepted by the backend is allowed.
+                                Empty means any destination accepted by the selected target is allowed.
                               items:
                                 type: string
                               type: array
@@ -143,7 +144,7 @@ spec:
 
                                 An asterisk matches any sequence of characters; "*" allows every value.
 
-                                Empty means any bind accepted by the backend is allowed.
+                                Empty means any bind accepted by the selected target is allowed.
                               items:
                                 type: string
                               type: array
@@ -176,9 +177,8 @@ spec:
                       x-kubernetes-list-type: set
                     passwords:
                       description: |-
-                        Passwords are opaque tokens submitted through the SSH password method, or
-                        password material for an external endpoint. kube-ssh does not parse these
-                        values as username/password pairs.
+                        Passwords are opaque tokens submitted through the SSH password method.
+                        kube-ssh does not parse these values as username/password pairs.
                       items:
                         type: string
                       type: array
@@ -207,29 +207,6 @@ spec:
                         type: object
                       type: array
                       x-kubernetes-list-type: atomic
-                    privateKey:
-                      description: |-
-                        PrivateKey is optional client private key material for public-key
-                        authentication to an external SSH endpoint. It is not used for
-                        authenticating inbound kube-ssh users.
-                      type: string
-                    privateKeyFrom:
-                      description: PrivateKeyFrom references a Secret key containing
-                        private key material.
-                      properties:
-                        key:
-                          description: Key is the key within the referenced Secret.
-                          minLength: 1
-                          type: string
-                        name:
-                          description: Name is the referenced same-namespace Secret
-                            name.
-                          minLength: 1
-                          type: string
-                      required:
-                      - key
-                      - name
-                      type: object
                     publicKeys:
                       description: |-
                         PublicKeys are OpenSSH authorized_keys lines accepted as possession proof
@@ -288,41 +265,32 @@ spec:
                   properties:
                     address:
                       description: Address is an IP address or DNS name.
+                      maxLength: 253
                       minLength: 1
                       type: string
-                    labels:
-                      additionalProperties:
-                        type: string
+                    insecureSkipVerification:
                       description: |-
-                        Labels are endpoint-local labels used by strategy weights, policy, or
-                        audit. They do not select Kubernetes objects.
-                      type: object
-                      x-kubernetes-map-type: atomic
+                        InsecureSkipVerification accepts any upstream host key. It must be opted in
+                        explicitly and cannot be combined with pinned keys.
+                      type: boolean
                     name:
                       description: Name is a stable endpoint name used for status,
                         audit, and affinity.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
-                    params:
-                      additionalProperties:
-                        type: string
-                      description: |-
-                        Params carries backend-specific endpoint configuration. Values are strings
-                        so the CRD schema remains simple and forward-compatible.
-                      type: object
-                      x-kubernetes-map-type: atomic
                     passwords:
-                      description: |-
-                        Passwords are opaque tokens submitted through the SSH password method, or
-                        password material for an external endpoint. kube-ssh does not parse these
-                        values as username/password pairs.
+                      description: Passwords are exact inline passwords tried against
+                        the upstream SSH server.
                       items:
                         type: string
+                      minItems: 1
                       type: array
-                      x-kubernetes-list-type: set
+                      x-kubernetes-list-type: atomic
                     passwordsFrom:
-                      description: |-
-                        PasswordsFrom references Secret keys containing password-token values. Each
-                        key may contain one token, or multiple newline-delimited tokens.
+                      description: PasswordsFrom references exact passwords tried
+                        after inline Passwords.
                       items:
                         description: |-
                           LocalSecretKeyRef references one key in a Secret in the same namespace as the
@@ -341,43 +309,61 @@ spec:
                         - key
                         - name
                         type: object
+                      minItems: 1
                       type: array
                       x-kubernetes-list-type: atomic
-                    privateKey:
-                      description: |-
-                        PrivateKey is optional client private key material for public-key
-                        authentication to an external SSH endpoint. It is not used for
-                        authenticating inbound kube-ssh users.
-                      type: string
-                    privateKeyFrom:
-                      description: PrivateKeyFrom references a Secret key containing
-                        private key material.
-                      properties:
-                        key:
-                          description: Key is the key within the referenced Secret.
-                          minLength: 1
-                          type: string
-                        name:
-                          description: Name is the referenced same-namespace Secret
-                            name.
-                          minLength: 1
-                          type: string
-                      required:
-                      - key
-                      - name
-                      type: object
-                    publicKeys:
-                      description: |-
-                        PublicKeys are OpenSSH authorized_keys lines accepted as possession proof
-                        for this access object.
+                    port:
+                      default: 22
+                      description: Port is the SSH server port. Omitted means 22.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    privateKeys:
+                      description: PrivateKeys are unencrypted SSH private keys tried
+                        in order.
                       items:
                         type: string
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    privateKeysFrom:
+                      description: |-
+                        PrivateKeysFrom references unencrypted SSH private keys tried after inline
+                        PrivateKeys.
+                      items:
+                        description: |-
+                          LocalSecretKeyRef references one key in a Secret in the same namespace as the
+                          Access object.
+                        properties:
+                          key:
+                            description: Key is the key within the referenced Secret.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the referenced same-namespace Secret
+                              name.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    publicKeys:
+                      description: PublicKeys are pinned OpenSSH public-key lines
+                        accepted from the upstream.
+                      items:
+                        type: string
+                      minItems: 1
                       type: array
                       x-kubernetes-list-type: set
                     publicKeysFrom:
                       description: |-
-                        PublicKeysFrom references Secret keys containing OpenSSH authorized_keys
-                        lines. Each key may contain one key, or multiple newline-delimited keys.
+                        PublicKeysFrom references Secret keys containing one or more newline-delimited
+                        OpenSSH public-key lines.
                       items:
                         description: |-
                           LocalSecretKeyRef references one key in a Secret in the same namespace as the
@@ -396,11 +382,12 @@ spec:
                         - key
                         - name
                         type: object
+                      minItems: 1
                       type: array
                       x-kubernetes-list-type: atomic
                     username:
-                      description: Username is the optional backend login username
-                        for this external endpoint.
+                      description: Username is the upstream SSH login username.
+                      minLength: 1
                       type: string
                     weight:
                       description: |-
@@ -411,9 +398,27 @@ spec:
                       type: integer
                   required:
                   - address
+                  - name
+                  - username
                   type: object
+                  x-kubernetes-validations:
+                  - message: configure either privateKeys/privateKeysFrom or passwords/passwordsFrom
+                    rule: '((has(self.privateKeys) || has(self.privateKeysFrom)) ?
+                      1 : 0) + ((has(self.passwords) || has(self.passwordsFrom)) ?
+                      1 : 0) == 1'
+                  - message: insecureSkipVerification is mutually exclusive with public
+                      keys
+                    rule: '!self.insecureSkipVerification || (!has(self.publicKeys)
+                      && !has(self.publicKeysFrom))'
+                  - message: public keys are required unless insecureSkipVerification
+                      is true
+                    rule: self.insecureSkipVerification || has(self.publicKeys) ||
+                      has(self.publicKeysFrom)
+                minItems: 1
                 type: array
-                x-kubernetes-list-type: atomic
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               gatewayClassName:
                 description: |-
                   GatewayClassName selects the kube-ssh gateway class that owns this Access.
@@ -475,12 +480,12 @@ spec:
                 type: object
               strategy:
                 description: |-
-                  Strategy describes how kube-ssh picks one backend when multiple Pods or
+                  Strategy describes how kube-ssh picks one target when multiple Pods or
                   endpoints are available.
                 properties:
                   sessionAffinity:
                     description: |-
-                      SessionAffinity reuses the last selected backend for the same affinity key
+                      SessionAffinity reuses the last selected target for the same affinity key
                       when possible.
                     properties:
                       timeoutSeconds:
@@ -515,19 +520,18 @@ spec:
                     type: string
                   weights:
                     description: |-
-                      Weights assigns relative weights to matching Pods or endpoints. Algorithms
-                      that support weighting should use these values when choosing between
-                      backends. Backends that match no weight entry use the default weight of 1.
+                      Weights assigns relative weights to matching Pods. Algorithms that support
+                      weighting should use these values when choosing between targets. Pods
+                      that match no weight entry use the default weight of 1.
                     items:
                       description: AccessStrategyWeight assigns a relative weight
-                        to matching Pods or endpoints.
+                        to matching Pods.
                       properties:
                         selector:
                           additionalProperties:
                             type: string
-                          description: |-
-                            Selector matches Pods within the parent Access selector, or endpoint
-                            labels in External mode.
+                          description: Selector matches Pods within the parent Access
+                            selector.
                           type: object
                           x-kubernetes-map-type: atomic
                         weight:
@@ -558,8 +562,6 @@ spec:
                 && size(self.selector) > 0)'
             - message: endpoints is required when type is External
               rule: self.type != 'External' || has(self.endpoints)
-            - message: selector and endpoints are mutually exclusive
-              rule: '!(has(self.selector) && has(self.endpoints))'
           status:
             description: AccessStatus is observed state for an Access.
             properties:
@@ -866,7 +868,7 @@ spec:
             - name: POLICY_DEFAULT_CONTAINER_MODE
               value: "KubernetesDefault"
             - name: POLICY_DEFAULT_CAPABILITY
-              value: "*"
+              value: "shell exec scp sftp local_forward remote_forward agent_forward"
             - name: POLICY_DEFAULT_ENV
               value: "*"
             - name: POLICY_DEFAULT_LOCAL_FORWARD
@@ -891,8 +893,10 @@ spec:
               value: "/usr/local/bin/kube-ssh-helper"
             - name: HELPER_REMOTE_DIR
               value: "/tmp"
-            - name: BACKEND_MODE
-              value: "kubernetes"
+            - name: MANAGED_TRANSPORT
+              value: "apiserver"
+            - name: EXTERNAL_SSH_CONNECT_TIMEOUT
+              value: "30s"
             - name: ACCESS_POLICY_ENABLED
               value: "true"
             - name: AUTHENTICATION_ANONYMOUS

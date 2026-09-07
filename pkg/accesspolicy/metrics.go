@@ -12,21 +12,21 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
-func WithAuthenticatorMetrics(next authn.SSHAuthenticator, recorder metrics.Recorder) authn.SSHAuthenticator {
+func WithAuthenticatorMetrics(next authn.SSHAuthenticator, recorder metrics.AccessPolicyRecorder) authn.SSHAuthenticator {
 	if recorder == nil {
 		recorder = metrics.NopRecorder{}
 	}
 	return &metricsAuthenticator{next: next, recorder: recorder}
 }
 
-func WithResolverMetrics(next target.Resolver, recorder metrics.Recorder) target.Resolver {
+func WithResolverMetrics(next target.Resolver, recorder metrics.AccessPolicyRecorder) target.Resolver {
 	if recorder == nil {
 		recorder = metrics.NopRecorder{}
 	}
 	return &metricsResolver{next: next, recorder: recorder}
 }
 
-func WithAuthorizerMetrics(next authz.Authorizer, recorder metrics.Recorder) authz.Authorizer {
+func WithAuthorizerMetrics(next authz.Authorizer, recorder metrics.AccessPolicyRecorder) authz.Authorizer {
 	if recorder == nil {
 		recorder = metrics.NopRecorder{}
 	}
@@ -35,7 +35,7 @@ func WithAuthorizerMetrics(next authz.Authorizer, recorder metrics.Recorder) aut
 
 type metricsAuthenticator struct {
 	next     authn.SSHAuthenticator
-	recorder metrics.Recorder
+	recorder metrics.AccessPolicyRecorder
 }
 
 func (a *metricsAuthenticator) AuthenticateBasic(ctx context.Context, username, password string) (*authn.AuthenticateInfo, error) {
@@ -54,19 +54,19 @@ func (a *metricsAuthenticator) AuthenticatePublicKey(ctx context.Context, sshUse
 
 type metricsResolver struct {
 	next     target.Resolver
-	recorder metrics.Recorder
+	recorder metrics.AccessPolicyRecorder
 }
 
-func (r *metricsResolver) Resolve(ctx context.Context, req target.ResolveRequest) (*target.Target, error) {
+func (r *metricsResolver) Resolve(ctx context.Context, input target.ResolveInput) (*target.Target, error) {
 	start := time.Now()
-	tgt, err := r.next.Resolve(ctx, req)
+	tgt, err := r.next.Resolve(ctx, input)
 	r.recorder.AccessPolicyResolveFinished(resolveResult(err), time.Since(start))
 	return tgt, err
 }
 
 type metricsAuthorizer struct {
 	next     authz.Authorizer
-	recorder metrics.Recorder
+	recorder metrics.AccessPolicyRecorder
 }
 
 func (a *metricsAuthorizer) Authorize(ctx context.Context, req authz.Request) (authz.Decision, string, error) {
@@ -77,23 +77,23 @@ func (a *metricsAuthorizer) Authorize(ctx context.Context, req authz.Request) (a
 }
 
 func authResult(err error) string {
-	if err == nil {
-		return metrics.ResultSuccess
+	if err != nil {
+		if errors.Is(err, authn.ErrNotProvided) {
+			return metrics.ResultNotProvided
+		}
+		return metrics.ResultError
 	}
-	if errors.Is(err, authn.ErrNotProvided) {
-		return metrics.ResultNotProvided
-	}
-	return metrics.ResultError
+	return metrics.ResultSuccess
 }
 
 func resolveResult(err error) string {
-	if err == nil {
-		return metrics.ResultSuccess
+	if err != nil {
+		if errors.Is(err, target.ErrNotProvided) {
+			return metrics.ResultNotProvided
+		}
+		return metrics.ResultError
 	}
-	if errors.Is(err, target.ErrNotProvided) {
-		return metrics.ResultNotProvided
-	}
-	return metrics.ResultError
+	return metrics.ResultSuccess
 }
 
 func authorizeResult(decision authz.Decision, err error) string {

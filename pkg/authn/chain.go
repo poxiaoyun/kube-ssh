@@ -13,25 +13,19 @@ type Chain struct {
 }
 
 func NewChain(authenticators ...SSHAuthenticator) *Chain {
-	chain := &Chain{}
-	for _, authenticator := range authenticators {
-		if authenticator != nil {
-			chain.authenticators = append(chain.authenticators, authenticator)
-		}
-	}
-	return chain
+	return &Chain{authenticators: authenticators}
 }
 
 func (c *Chain) AuthenticateBasic(ctx context.Context, username, password string) (*AuthenticateInfo, error) {
 	for _, authenticator := range c.authenticators {
 		info, err := authenticator.AuthenticateBasic(ctx, username, password)
-		if err == nil {
-			return info, nil
-		}
-		if errors.Is(err, ErrNotProvided) {
+		if err != nil {
+			if !errors.Is(err, ErrNotProvided) {
+				return nil, err
+			}
 			continue
 		}
-		return nil, err
+		return info, nil
 	}
 	return nil, ErrNotProvided
 }
@@ -39,13 +33,13 @@ func (c *Chain) AuthenticateBasic(ctx context.Context, username, password string
 func (c *Chain) AuthenticatePublicKey(ctx context.Context, username string, pubkey ssh.PublicKey) (*AuthenticateInfo, error) {
 	for _, authenticator := range c.authenticators {
 		info, err := authenticator.AuthenticatePublicKey(ctx, username, pubkey)
-		if err == nil {
-			return info, nil
-		}
-		if errors.Is(err, ErrNotProvided) {
+		if err != nil {
+			if !errors.Is(err, ErrNotProvided) {
+				return nil, err
+			}
 			continue
 		}
-		return nil, err
+		return info, nil
 	}
 	return nil, ErrNotProvided
 }

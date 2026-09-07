@@ -1,6 +1,9 @@
 # kube-ssh
 
-kube-ssh provides a unified SSH gateway for Kubernetes Pods. Access resources select accessible Pods and authorize users with SSH public keys.
+kube-ssh provides one SSH gateway for Kubernetes containers that do not run
+`sshd` and for targets that already expose a complete SSH server. Access
+resources select the target and define inbound credentials and operation
+policy.
 
 ## Advertise addresses
 
@@ -41,9 +44,9 @@ The default Service is `NodePort` on port `30022`. Choose `ClusterIP`, `NodePort
 
 The Chart automatically generates an Ed25519 host key and stores it in a Secret so the SSH fingerprint remains stable across Pod restarts and upgrades. To reuse a centrally managed key, set `kubeSsh.hostKey.existingSecret`; the Secret must contain the key configured by `kubeSsh.hostKey.secretKey`. Operators may alternatively provide `kubeSsh.hostKey.privateKey` inline. The precedence is `existingSecret`, `privateKey`, then automatic generation. Set `kubeSsh.hostKey.autoGenerate=false` to disable host-key management and let the gateway use an ephemeral key. The static `deploy/install.yaml` does this intentionally so it never distributes a shared private key.
 
-## Node backend
+## Pod SSH node-local CRI transport
 
-Set `kubeSsh.backend.mode=node` to deploy the node-local CRI data plane. SSH
+Set `kubeSsh.managed.transport=cri` to deploy the node-local CRI data plane. SSH
 streams then flow from the gateway directly to the selected node on port
 `10443`; only Pod lookup/watch, Access policy, Secret watch, and
 SubjectAccessReview calls use the Kubernetes API server. There is no automatic
@@ -62,3 +65,15 @@ configured Node server name and its common name must match
 `kubeSsh.node.expectedClientName`. The node process
 dynamically reloads its certificate and client CA from the mounted files;
 rotated credentials are used for new connections without a DaemonSet restart.
+
+## SSH Proxy
+
+An `Access` with `spec.type: External` proxies the complete SSH protocol to an
+existing sshd. The server may run in a Pod, elsewhere in the cluster, or on any
+reachable host. Configure every endpoint with `address`, `port`, upstream
+`username`, an explicitly configured gateway credential, and pinned host keys.
+An in-cluster Service is written as its DNS name in `address`; there is no
+separate Service field and inbound user credentials are never used upstream.
+The connector accepts a plain DNS name or IP only and binds the connection to
+the selected endpoint. Use a cluster NetworkPolicy for deployment-level egress
+reachability restrictions.

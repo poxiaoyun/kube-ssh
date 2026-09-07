@@ -7,7 +7,7 @@ import (
 
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
-	"xiaoshiai.cn/kube-ssh/pkg/util/pattern"
+	"xiaoshiai.cn/kube-ssh/pkg/wildcard"
 )
 
 type Authorizer struct {
@@ -42,9 +42,6 @@ func (a *Authorizer) Authorize(ctx context.Context, req authz.Request) (authz.De
 	access, err := a.store.Get(ctx, namespace, name)
 	if err != nil {
 		return authz.DecisionDeny, "authenticated access no longer exists", nil
-	}
-	if !isPodAccess(access) {
-		return authz.DecisionNoOpinion, "", nil
 	}
 	credential := findCredential(access, username)
 	if credential == nil {
@@ -115,7 +112,7 @@ func containsCapability(values []sshv1.Capability, capability sshv1.Capability) 
 }
 
 func bindAllowed(patterns []string, bind string) bool {
-	return pattern.MatchAny(patterns, bind)
+	return wildcard.MatchAny(patterns, bind)
 }
 
 func resourceName(resources []authz.AttributeResource, resource string) string {

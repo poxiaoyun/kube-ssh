@@ -35,7 +35,7 @@ rules:
       - get
       - list
       - watch
-  {{- if ne .Values.kubeSsh.backend.mode "node" }}
+  {{- if ne .Values.kubeSsh.managed.transport "cri" }}
   - apiGroups:
       - ""
     resources:

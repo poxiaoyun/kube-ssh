@@ -149,7 +149,7 @@ func (c *PolicyCache) credentialPasswords(namespace string, credential sshv1.Acc
 		}
 	}
 	for _, ref := range credential.PasswordsFrom {
-		value, err := c.secretValue(namespace, ref)
+		value, err := c.SecretValue(namespace, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +170,7 @@ func (c *PolicyCache) credentialPublicKeys(namespace string, credential sshv1.Ac
 		values[fingerprint] = struct{}{}
 	}
 	for _, ref := range credential.PublicKeysFrom {
-		value, err := c.secretValue(namespace, ref)
+		value, err := c.SecretValue(namespace, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -185,7 +185,8 @@ func (c *PolicyCache) credentialPublicKeys(namespace string, credential sshv1.Ac
 	return values, nil
 }
 
-func (c *PolicyCache) secretValue(namespace string, ref sshv1.LocalSecretKeyRef) ([]byte, error) {
+// SecretValue returns one same-namespace Secret key referenced by an Access.
+func (c *PolicyCache) SecretValue(namespace string, ref sshv1.LocalSecretKeyRef) ([]byte, error) {
 	if ref.Name == "" || ref.Key == "" {
 		return nil, fmt.Errorf("incomplete secret reference in namespace %q", namespace)
 	}
@@ -211,9 +212,6 @@ func (c *PolicyCache) secretValue(namespace string, ref sshv1.LocalSecretKeyRef)
 }
 
 func (c *PolicyCache) acceptAccess(access *sshv1.Access) bool {
-	if !isPodAccess(access) {
-		return false
-	}
 	if c.namespace != "" && access.Namespace != c.namespace {
 		return false
 	}

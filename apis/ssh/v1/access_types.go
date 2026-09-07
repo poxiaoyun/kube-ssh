@@ -6,9 +6,9 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // external endpoints.
 //
 // The resource is intentionally workload-local: application owners can ship it
-// beside a Deployment, StatefulSet, Pod, or service-like manifest. Credentials
-// may contain plaintext passwords; cluster RBAC around this CRD is therefore a
-// security boundary.
+// beside a Deployment, StatefulSet, Pod, or service-like manifest.
+// Authentication material may contain plaintext passwords; cluster RBAC around
+// this CRD is therefore a security boundary.
 //
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +genclient
@@ -30,7 +30,6 @@ type Access struct {
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'Pod' || (has(self.selector) && size(self.selector) > 0)",message="non-empty selector is required when type is Pod"
 // +kubebuilder:validation:XValidation:rule="self.type != 'External' || has(self.endpoints)",message="endpoints is required when type is External"
-// +kubebuilder:validation:XValidation:rule="!(has(self.selector) && has(self.endpoints))",message="selector and endpoints are mutually exclusive"
 type AccessSpec struct {
 	// GatewayClassName selects the kube-ssh gateway class that owns this Access.
 	// Omitted selects the default (classless) gateway. Gateways only process
@@ -61,10 +60,12 @@ type AccessSpec struct {
 
 	// Endpoints are explicit external endpoints used when Type is External.
 	//
-	// +listType=atomic
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	Endpoints []AccessEndpoint `json:"endpoints,omitempty"`
 
-	// Strategy describes how kube-ssh picks one backend when multiple Pods or
+	// Strategy describes how kube-ssh picks one target when multiple Pods or
 	// endpoints are available.
 	Strategy *AccessStrategy `json:"strategy,omitempty"`
 
@@ -88,7 +89,7 @@ type AccessSpec struct {
 	Credentials []AccessCredential `json:"credentials,omitempty"`
 }
 
-// AccessType is the backend selection mode.
+// AccessType selects the SSH connection implementation.
 //
 // +kubebuilder:validation:Enum=Pod;External
 type AccessType string
@@ -99,17 +100,35 @@ const (
 )
 
 // AccessEndpoint is one explicit external endpoint.
+//
+// +kubebuilder:validation:XValidation:rule="((has(self.privateKeys) || has(self.privateKeysFrom)) ? 1 : 0) + ((has(self.passwords) || has(self.passwordsFrom)) ? 1 : 0) == 1",message="configure either privateKeys/privateKeysFrom or passwords/passwordsFrom"
+// +kubebuilder:validation:XValidation:rule="!self.insecureSkipVerification || (!has(self.publicKeys) && !has(self.publicKeysFrom))",message="insecureSkipVerification is mutually exclusive with public keys"
+// +kubebuilder:validation:XValidation:rule="self.insecureSkipVerification || has(self.publicKeys) || has(self.publicKeysFrom)",message="public keys are required unless insecureSkipVerification is true"
 type AccessEndpoint struct {
 	// Name is a stable endpoint name used for status, audit, and affinity.
-	Name string `json:"name,omitempty"`
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
 
 	// Address is an IP address or DNS name.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Address string `json:"address"`
 
-	// Username is the optional backend login username for this external endpoint.
-	Username string `json:"username,omitempty"`
+	// Port is the SSH server port. Omitted means 22.
+	//
+	// +kubebuilder:default=22
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+
+	// Username is the upstream SSH login username.
+	//
+	// +kubebuilder:validation:MinLength=1
+	Username string `json:"username"`
 
 	// Weight is the relative endpoint weight. Values less than 1 should be
 	// rejected by validation. Omitted means 1.
@@ -117,23 +136,54 @@ type AccessEndpoint struct {
 	// +kubebuilder:validation:Minimum=1
 	Weight *int32 `json:"weight,omitempty"`
 
-	// Labels are endpoint-local labels used by strategy weights, policy, or
-	// audit. They do not select Kubernetes objects.
+	// PrivateKeys are unencrypted SSH private keys tried in order.
 	//
-	// +mapType=atomic
-	Labels map[string]string `json:"labels,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	PrivateKeys []string `json:"privateKeys,omitempty"`
 
-	// Credential provides credentials needed by an external backend.
-	Credential `json:",inline"`
-
-	// Params carries backend-specific endpoint configuration. Values are strings
-	// so the CRD schema remains simple and forward-compatible.
+	// PrivateKeysFrom references unencrypted SSH private keys tried after inline
+	// PrivateKeys.
 	//
-	// +mapType=atomic
-	Params map[string]string `json:"params,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	PrivateKeysFrom []LocalSecretKeyRef `json:"privateKeysFrom,omitempty"`
+
+	// Passwords are exact inline passwords tried against the upstream SSH server.
+	//
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Passwords []string `json:"passwords,omitempty"`
+
+	// PasswordsFrom references exact passwords tried after inline Passwords.
+	//
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	PasswordsFrom []LocalSecretKeyRef `json:"passwordsFrom,omitempty"`
+
+	// PublicKeys are pinned OpenSSH public-key lines accepted from the upstream.
+	//
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	PublicKeys []string `json:"publicKeys,omitempty"`
+
+	// PublicKeysFrom references Secret keys containing one or more newline-delimited
+	// OpenSSH public-key lines.
+	//
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	PublicKeysFrom []LocalSecretKeyRef `json:"publicKeysFrom,omitempty"`
+
+	// InsecureSkipVerification accepts any upstream host key. It must be opted in
+	// explicitly and cannot be combined with pinned keys.
+	InsecureSkipVerification bool `json:"insecureSkipVerification,omitempty"`
 }
 
-// AccessStrategy describes how to pick one backend from selected Pods or
+// AccessStrategy describes how to pick one target from selected Pods or
 // endpoints.
 type AccessStrategy struct {
 	// Type defaults to Random.
@@ -141,19 +191,19 @@ type AccessStrategy struct {
 	// +kubebuilder:default=Random
 	Type AccessStrategyType `json:"type,omitempty"`
 
-	// Weights assigns relative weights to matching Pods or endpoints. Algorithms
-	// that support weighting should use these values when choosing between
-	// backends. Backends that match no weight entry use the default weight of 1.
+	// Weights assigns relative weights to matching Pods. Algorithms that support
+	// weighting should use these values when choosing between targets. Pods
+	// that match no weight entry use the default weight of 1.
 	//
 	// +listType=atomic
 	Weights []AccessStrategyWeight `json:"weights,omitempty"`
 
-	// SessionAffinity reuses the last selected backend for the same affinity key
+	// SessionAffinity reuses the last selected target for the same affinity key
 	// when possible.
 	SessionAffinity *AccessSessionAffinity `json:"sessionAffinity,omitempty"`
 }
 
-// AccessStrategyType is the multi-backend selection algorithm.
+// AccessStrategyType is the multi-target selection algorithm.
 //
 // +kubebuilder:validation:Enum=Random;RoundRobin;LeastConnections;Newest;Oldest
 type AccessStrategyType string
@@ -166,10 +216,9 @@ const (
 	AccessStrategyTypeOldest           AccessStrategyType = "Oldest"
 )
 
-// AccessStrategyWeight assigns a relative weight to matching Pods or endpoints.
+// AccessStrategyWeight assigns a relative weight to matching Pods.
 type AccessStrategyWeight struct {
-	// Selector matches Pods within the parent Access selector, or endpoint
-	// labels in External mode.
+	// Selector matches Pods within the parent Access selector.
 	//
 	// +mapType=atomic
 	Selector map[string]string `json:"selector,omitempty"`
@@ -182,7 +231,7 @@ type AccessStrategyWeight struct {
 }
 
 // AccessSessionAffinity describes the key used to reuse a previously selected
-// backend.
+// target.
 type AccessSessionAffinity struct {
 	// Type chooses the affinity key. SourceIP uses the remote address observed
 	// by the kube-ssh gateway; in Kubernetes this may be a node, load balancer,
@@ -276,26 +325,8 @@ type AccessCredential struct {
 	// +mapType=atomic
 	Extra map[string][]string `json:"extra,omitempty"`
 
-	// Credential provides credential material directly on this access credential.
-	Credential `json:",inline"`
-
-	// Containers limits this credential to named regular Pod containers. Omitted
-	// or empty inherits the Access container policy. Entries are exact names or
-	// patterns in which "*" matches any sequence of characters.
-	//
-	// +listType=set
-	Containers []string `json:"containers,omitempty"`
-
-	// Capabilities limits what this credential can do on the target.
-	Capabilities CapabilityPolicy `json:"capabilities,omitempty"`
-}
-
-// Credential provides credential material directly or from referenced
-// objects.
-type Credential struct {
-	// Passwords are opaque tokens submitted through the SSH password method, or
-	// password material for an external endpoint. kube-ssh does not parse these
-	// values as username/password pairs.
+	// Passwords are opaque tokens submitted through the SSH password method.
+	// kube-ssh does not parse these values as username/password pairs.
 	//
 	// +listType=set
 	Passwords []string `json:"passwords,omitempty"`
@@ -318,13 +349,15 @@ type Credential struct {
 	// +listType=atomic
 	PublicKeysFrom []LocalSecretKeyRef `json:"publicKeysFrom,omitempty"`
 
-	// PrivateKey is optional client private key material for public-key
-	// authentication to an external SSH endpoint. It is not used for
-	// authenticating inbound kube-ssh users.
-	PrivateKey string `json:"privateKey,omitempty"`
+	// Containers limits this credential to named regular Pod containers. Omitted
+	// or empty inherits the Access container policy. Entries are exact names or
+	// patterns in which "*" matches any sequence of characters.
+	//
+	// +listType=set
+	Containers []string `json:"containers,omitempty"`
 
-	// PrivateKeyFrom references a Secret key containing private key material.
-	PrivateKeyFrom *LocalSecretKeyRef `json:"privateKeyFrom,omitempty"`
+	// Capabilities limits what this credential can do on the target.
+	Capabilities CapabilityPolicy `json:"capabilities,omitempty"`
 }
 
 // LocalSecretKeyRef references one key in a Secret in the same namespace as the
@@ -365,7 +398,7 @@ type CapabilityPolicy struct {
 
 // Capability is an SSH operation type.
 //
-// +kubebuilder:validation:Enum=shell;exec;scp;sftp;local_forward;remote_forward;agent_forward
+// +kubebuilder:validation:Enum=shell;exec;scp;sftp;local_forward;remote_forward;agent_forward;ssh_extension
 type Capability string
 
 const (
@@ -376,6 +409,7 @@ const (
 	CapabilityLocalForward  Capability = "local_forward"
 	CapabilityRemoteForward Capability = "remote_forward"
 	CapabilityAgentForward  Capability = "agent_forward"
+	CapabilitySSHExtension  Capability = "ssh_extension"
 )
 
 // LocalForwardPolicy restricts direct-tcpip requests.
@@ -387,7 +421,7 @@ type LocalForwardPolicy struct {
 	//
 	// An asterisk matches any sequence of characters; "*" allows every value.
 	//
-	// Empty means any destination accepted by the backend is allowed.
+	// Empty means any destination accepted by the selected target is allowed.
 	//
 	// +listType=set
 	AllowDestinations []string `json:"allowDestinations,omitempty"`
@@ -402,7 +436,7 @@ type RemoteForwardPolicy struct {
 	//
 	// An asterisk matches any sequence of characters; "*" allows every value.
 	//
-	// Empty means any bind accepted by the backend is allowed.
+	// Empty means any bind accepted by the selected target is allowed.
 	//
 	// +listType=set
 	AllowBinds []string `json:"allowBinds,omitempty"`
@@ -442,7 +476,7 @@ const (
 	AccessConditionValid = "Valid"
 
 	// AccessConditionReady reports whether the Access currently has at least one
-	// usable backend target.
+	// usable target.
 	AccessConditionReady = "Ready"
 )
 

@@ -1,0 +1,23 @@
+apiVersion: ssh.xiaoshiai.cn/v1
+kind: Access
+metadata:
+  name: notebook
+  namespace: default
+spec:
+  type: External
+  endpoints:
+    - name: main
+      address: notebook-ssh.default.svc
+      port: 22
+      username: jovyan
+      privateKeysFrom:
+        - name: notebook-ssh-upstream
+          key: ssh_private_key
+      publicKeysFrom:
+        - name: notebook-ssh-upstream
+          key: ssh_host_keys
+  credentials:
+    - username: alice
+      publicKeysFrom:
+        - name: notebook-ssh-users
+          key: authorized_keys

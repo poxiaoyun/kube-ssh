@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+	"xiaoshiai.cn/kube-ssh/pkg/target"
 	webhookclient "xiaoshiai.cn/kube-ssh/pkg/webhook"
 )
 
@@ -44,12 +45,23 @@ type WebhookPublicKeyCredential struct {
 }
 
 type WebhookAuthenticateResponse struct {
-	Authenticated bool         `json:"authenticated"`
-	User          UserInfo     `json:"user,omitempty"`
-	Method        string       `json:"method,omitempty"`
-	TargetHints   []TargetHint `json:"targetHints,omitempty"`
-	Reason        string       `json:"reason,omitempty"`
-	Error         string       `json:"error,omitempty"`
+	Authenticated bool                `json:"authenticated"`
+	User          UserInfo            `json:"user,omitempty"`
+	Method        string              `json:"method,omitempty"`
+	TargetHints   []WebhookTargetHint `json:"targetHints,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	Error         string              `json:"error,omitempty"`
+}
+
+type WebhookTargetHint struct {
+	Kind    string                    `json:"kind,omitempty"`
+	Options []WebhookTargetHintOption `json:"options,omitempty"`
+	Extra   map[string][]string       `json:"extra,omitempty"`
+}
+
+type WebhookTargetHintOption struct {
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 func (a *WebhookAuthenticator) AuthenticateBasic(ctx context.Context, username, password string) (*AuthenticateInfo, error) {
@@ -97,6 +109,18 @@ func (a *WebhookAuthenticator) authenticate(ctx context.Context, req *WebhookAut
 	return &AuthenticateInfo{
 		User:        resp.User,
 		Method:      method,
-		TargetHints: resp.TargetHints,
+		TargetHints: targetHintsFromWebhook(resp.TargetHints),
 	}, nil
+}
+
+func targetHintsFromWebhook(values []WebhookTargetHint) []target.Hint {
+	hints := make([]target.Hint, len(values))
+	for i, value := range values {
+		options := make([]target.Option, len(value.Options))
+		for j, option := range value.Options {
+			options[j] = target.Option{Key: option.Key, Value: option.Value}
+		}
+		hints[i] = target.Hint{Kind: value.Kind, Options: options, Aliases: value.Extra["aliases"]}
+	}
+	return hints
 }

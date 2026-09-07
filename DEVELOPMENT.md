@@ -79,7 +79,7 @@ make benchmark BENCH=SSH BENCHTIME=5s BENCH_COUNT=5
 Capture CPU and memory profiles for a concurrent SSH workload:
 
 ```bash
-go test ./pkg/server -run '^$' \
+go test ./pkg/gateway -run '^$' \
   -bench BenchmarkSSHHandshakeExecParallel -benchtime=20s \
   -cpuprofile /tmp/kube-ssh-cpu.out \
   -memprofile /tmp/kube-ssh-mem.out

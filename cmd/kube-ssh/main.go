@@ -14,28 +14,30 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
-	"xiaoshiai.cn/kube-ssh/pkg/server"
+	"xiaoshiai.cn/kube-ssh/pkg/gateway"
 	"xiaoshiai.cn/kube-ssh/pkg/version"
 )
 
 const exitFailure = 1
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	if err := newRootCmd().
+		Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitFailure)
 	}
 }
 
 func newRootCmd() *cobra.Command {
-	opts := server.NewDefaultOptions()
+	opts := gateway.NewDefaultOptions()
 	var authorizedKeys []string
 	var passwords []string
 
 	cmd := &cobra.Command{
-		Use:     "kube-ssh",
-		Short:   "SSH gateway for Kubernetes pods",
-		Version: version.Get().String(),
+		Use:   "kube-ssh",
+		Short: "SSH gateway for Kubernetes Pods and upstream SSH servers",
+		Version: version.Get().
+			String(),
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			return loadEnv(cmd.Flags())
 		},
@@ -54,7 +56,7 @@ func newRootCmd() *cobra.Command {
 
 			ctx, stop := signalContext()
 			defer stop()
-			if err := server.Run(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
+			if err := gateway.Run(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
 				return err
 			}
 			return nil
@@ -67,12 +69,13 @@ func newRootCmd() *cobra.Command {
 	f.StringArrayVar(&opts.AdvertiseAddresses, "advertise-address", opts.AdvertiseAddresses, "gateway address to publish in matching Access status, as host:port or {NodeIP}:port; repeatable")
 	f.StringVar(&opts.Kubeconfig, "kubeconfig", opts.Kubeconfig, "path to kubeconfig")
 	f.StringVar(&opts.HostKeyFile, "host-key-file", opts.HostKeyFile, "path to SSH host private key PEM file")
-	f.StringVar(&opts.Backend.Mode, "backend-mode", opts.Backend.Mode, "data-plane backend: kubernetes or node")
-	f.IntVar(&opts.Backend.Node.Port, "node-port", opts.Backend.Node.Port, "node data-plane HTTPS streaming port")
-	f.StringVar(&opts.Backend.Node.ServerName, "node-server-name", opts.Backend.Node.ServerName, "node data-plane TLS server name")
-	f.StringVar(&opts.Backend.Node.CAFile, "node-ca-file", opts.Backend.Node.CAFile, "node data-plane CA bundle")
-	f.StringVar(&opts.Backend.Node.CertFile, "node-cert-file", opts.Backend.Node.CertFile, "gateway client certificate for node data planes")
-	f.StringVar(&opts.Backend.Node.KeyFile, "node-key-file", opts.Backend.Node.KeyFile, "gateway client key for node data planes")
+	f.DurationVar(&opts.SSHProxy.ConnectTimeout, "external-ssh-connect-timeout", opts.SSHProxy.ConnectTimeout, "timeout for dialing and authenticating an upstream SSH server")
+	f.StringVar(&opts.PodSSH.Transport, "managed-transport", opts.PodSSH.Transport, "Pod SSH transport: apiserver or cri")
+	f.IntVar(&opts.PodSSH.CRI.Port, "cri-port", opts.PodSSH.CRI.Port, "CRI node data-plane HTTPS streaming port")
+	f.StringVar(&opts.PodSSH.CRI.ServerName, "cri-server-name", opts.PodSSH.CRI.ServerName, "CRI node data-plane TLS server name")
+	f.StringVar(&opts.PodSSH.CRI.CAFile, "cri-ca-file", opts.PodSSH.CRI.CAFile, "CRI node data-plane CA bundle")
+	f.StringVar(&opts.PodSSH.CRI.CertFile, "cri-cert-file", opts.PodSSH.CRI.CertFile, "gateway client certificate for CRI node data planes")
+	f.StringVar(&opts.PodSSH.CRI.KeyFile, "cri-key-file", opts.PodSSH.CRI.KeyFile, "gateway client key for CRI node data planes")
 	f.StringVar(&opts.Policy.Defaults.ContainerMode, "policy-default-container-mode", opts.Policy.Defaults.ContainerMode, "default container policy: KubernetesDefault, All, or None")
 	f.StringArrayVar(&opts.Policy.Defaults.Capabilities, "policy-default-capability", opts.Policy.Defaults.Capabilities, "default SSH capability; repeatable, * allows all")
 	f.StringArrayVar(&opts.Policy.Defaults.EnvAllowlist, "policy-default-env", opts.Policy.Defaults.EnvAllowlist, "default client environment pattern; repeatable")
@@ -211,7 +214,8 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Show version information",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cmd.Println(version.Get().String())
+			cmd.Println(version.Get().
+				String())
 			return nil
 		},
 	}

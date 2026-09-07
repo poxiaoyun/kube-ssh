@@ -1,3 +1,4 @@
+// Package authz defines SSH authorization inputs, decisions, and composition.
 package authz
 
 import (
@@ -28,13 +29,14 @@ const (
 	CapabilityLocalForward  Capability = "local_forward"
 	CapabilityRemoteForward Capability = "remote_forward"
 	CapabilityAgentForward  Capability = "agent_forward"
+	CapabilitySSHExtension  Capability = "ssh_extension"
 )
 
 // ParseCapability validates a capability string.
 func ParseCapability(value string) (Capability, error) {
 	capability := Capability(value)
 	switch capability {
-	case CapabilityShell, CapabilityExec, CapabilitySCP, CapabilitySFTP, CapabilityLocalForward, CapabilityRemoteForward, CapabilityAgentForward:
+	case CapabilityShell, CapabilityExec, CapabilitySCP, CapabilitySFTP, CapabilityLocalForward, CapabilityRemoteForward, CapabilityAgentForward, CapabilitySSHExtension:
 		return capability, nil
 	default:
 		return "", fmt.Errorf("unknown capability %q", value)
@@ -64,10 +66,10 @@ type Attributes struct {
 
 // Request is the complete authorization input for one SSH operation.
 type Request struct {
-	User       authn.UserInfo      `json:"user,omitempty"`
-	AuthMethod string              `json:"authMethod,omitempty"`
-	AuthExtra  map[string][]string `json:"authExtra,omitempty"`
-	Attributes Attributes          `json:"attributes,omitempty"`
+	User       authn.UserInfo
+	AuthMethod string
+	AuthExtra  map[string][]string
+	Attributes Attributes
 }
 
 // Authorizer evaluates whether an authenticated user may perform one operation.
@@ -77,6 +79,7 @@ type Request struct {
 // permit the operation, or DecisionDeny to reject it. The reason is user-visible
 // on denied operations and should be concise.
 type Authorizer interface {
+	// Authorize returns the decision and user-visible reason for one operation.
 	Authorize(ctx context.Context, req Request) (Decision, string, error)
 }
 
@@ -90,9 +93,6 @@ type Chain []Authorizer
 
 func (c Chain) Authorize(ctx context.Context, req Request) (Decision, string, error) {
 	for _, authorizer := range c {
-		if authorizer == nil {
-			continue
-		}
 		decision, reason, err := authorizer.Authorize(ctx, req)
 		if err != nil {
 			return decision, reason, err

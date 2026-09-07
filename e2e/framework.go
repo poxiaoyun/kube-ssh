@@ -597,11 +597,12 @@ func (f *Framework) waitTCP(host string, port int, timeout time.Duration) {
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
+		_ = conn.Close()
+		return
 	}
 	f.T.Fatalf("timed out waiting for %s", address)
 }
@@ -783,9 +784,11 @@ func kindEnv() map[string]string {
 
 func kindCreateTimeout() time.Duration {
 	if value := os.Getenv("KUBE_SSH_E2E_KIND_CREATE_TIMEOUT"); value != "" {
-		if timeout, err := time.ParseDuration(value); err == nil {
-			return timeout
+		timeout, err := time.ParseDuration(value)
+		if err != nil {
+			return 5 * time.Minute
 		}
+		return timeout
 	}
 	return 5 * time.Minute
 }
@@ -802,10 +805,10 @@ func gatewayPath() string {
 		return path
 	}
 	currentBuild := filepath.Join("..", "bin", runtime.GOOS+"-"+runtime.GOARCH, "kube-ssh")
-	if _, err := os.Stat(currentBuild); err == nil {
-		return currentBuild
+	if _, err := os.Stat(currentBuild); err != nil {
+		return filepath.Join("..", "bin", "kube-ssh")
 	}
-	return filepath.Join("..", "bin", "kube-ssh")
+	return currentBuild
 }
 
 func runtimeGOARCH() string {

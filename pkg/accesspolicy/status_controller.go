@@ -17,11 +17,13 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
-	"xiaoshiai.cn/kube-ssh/pkg/kube"
+	"xiaoshiai.cn/kube-ssh/pkg/podtarget"
 )
 
+// AccessStatusUpdater persists one Access status projection.
 type AccessStatusUpdater func(context.Context, *sshv1.Access) (*sshv1.Access, error)
 
+// AccessStatusController projects Access validity and target availability into status.
 type AccessStatusController struct {
 	accesses      Store
 	pods          PodLister
@@ -32,11 +34,13 @@ type AccessStatusController struct {
 	queue         workqueue.TypedRateLimitingInterface[string]
 }
 
+// AccessStatusControllerOptions configures status policy and projections.
 type AccessStatusControllerOptions struct {
 	Policy    ContainerPolicy
 	Endpoints []sshv1.AccessStatusEndpoint
 }
 
+// NewAccessStatusController creates an Access status projection controller.
 func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cache.Indexer, updateStatus AccessStatusUpdater, options AccessStatusControllerOptions) *AccessStatusController {
 	return &AccessStatusController{
 		accesses:      accesses,
@@ -49,10 +53,8 @@ func NewAccessStatusController(accesses Store, pods PodLister, secretIndexer cac
 	}
 }
 
+// Start processes Access status updates until ctx is canceled.
 func (c *AccessStatusController) Start(ctx context.Context) {
-	if c == nil || c.queue == nil {
-		return
-	}
 	c.enqueueAll(ctx)
 	go func() {
 		<-ctx.Done()
@@ -61,6 +63,7 @@ func (c *AccessStatusController) Start(ctx context.Context) {
 	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
 }
 
+// AccessEventHandler enqueues changed Access objects.
 func (c *AccessStatusController) AccessEventHandler() cache.ResourceEventHandlerFuncs {
 	return cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
@@ -76,10 +79,12 @@ func (c *AccessStatusController) AccessEventHandler() cache.ResourceEventHandler
 	}
 }
 
+// PodEventHandler re-evaluates Access objects after Pod changes.
 func (c *AccessStatusController) PodEventHandler() cache.ResourceEventHandlerFuncs {
 	return c.enqueueAllEventHandler()
 }
 
+// SecretEventHandler re-evaluates Access objects after Secret changes.
 func (c *AccessStatusController) SecretEventHandler() cache.ResourceEventHandlerFuncs {
 	return c.enqueueAllEventHandler()
 }
@@ -170,7 +175,7 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		Endpoints:          accessStatusEndpoints(access, c.endpoints),
 		Conditions:         append([]metav1.Condition(nil), access.Status.Conditions...),
 	}
-	validStatus, validReason, validMessage := c.validateAccess(access)
+	validStatus, validReason, validMessage := c.validateAccess(ctx, access)
 	apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 		Type:               sshv1.AccessConditionValid,
 		Status:             validStatus,
@@ -185,6 +190,16 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 			ObservedGeneration: access.Generation,
 			Reason:             "Invalid",
 			Message:            "Access is not valid.",
+		})
+		return status
+	}
+	if access.Spec.Type == sshv1.AccessTypeExternal {
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               sshv1.AccessConditionReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: access.Generation,
+			Reason:             "EndpointsConfigured",
+			Message:            "External endpoints are configured.",
 		})
 		return status
 	}
@@ -221,7 +236,7 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 			Type:               sshv1.AccessConditionReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: access.Generation,
-			Reason:             "NoBackends",
+			Reason:             "NoTargets",
 			Message:            "Access selector matches no active Pods.",
 		})
 		return status
@@ -230,14 +245,14 @@ func (c *AccessStatusController) statusFor(ctx context.Context, access *sshv1.Ac
 		Type:               sshv1.AccessConditionReady,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: access.Generation,
-		Reason:             "BackendAvailable",
-		Message:            "Access has at least one active Pod backend.",
+		Reason:             "TargetAvailable",
+		Message:            "Access has at least one active Pod target.",
 	})
 	return status
 }
 
 func accessStatusEndpoints(access *sshv1.Access, advertised []sshv1.AccessStatusEndpoint) []sshv1.AccessStatusEndpoint {
-	if access == nil || len(advertised) == 0 {
+	if len(advertised) == 0 {
 		return nil
 	}
 	username := access.Namespace + "." + access.Name
@@ -250,17 +265,17 @@ func accessStatusEndpoints(access *sshv1.Access, advertised []sshv1.AccessStatus
 }
 
 func (c *AccessStatusController) statusContainer(pod corev1.Pod, access *sshv1.Access) string {
-	_, defaultContainer, err := kube.ResolvePodContainer(&pod, "")
+	_, defaultContainer, err := podtarget.ResolveContainer(&pod, "")
 	if err != nil {
 		return ""
 	}
 	for _, container := range pod.Spec.Containers {
 		explicit := container.Name != defaultContainer
-		accessAllowed := kube.ContainerModeAllows(c.policy.DefaultMode, explicit, container.Name, defaultContainer)
+		accessAllowed := podtarget.ContainerAllowed(c.policy.DefaultMode, explicit, container.Name, defaultContainer)
 		if len(access.Spec.Containers) > 0 {
 			accessAllowed = containerAllowed(access.Spec.Containers, container.Name)
 		}
-		if !accessAllowed || !kube.ContainerModeAllows(c.policy.LimitMode, explicit, container.Name, defaultContainer) {
+		if !accessAllowed || !podtarget.ContainerAllowed(c.policy.LimitMode, explicit, container.Name, defaultContainer) {
 			continue
 		}
 		for _, credential := range access.Spec.Credentials {
@@ -272,16 +287,7 @@ func (c *AccessStatusController) statusContainer(pod corev1.Pod, access *sshv1.A
 	return ""
 }
 
-func (c *AccessStatusController) validateAccess(access *sshv1.Access) (metav1.ConditionStatus, string, string) {
-	if access == nil {
-		return metav1.ConditionFalse, "InvalidSpec", "Access is nil."
-	}
-	if !isPodAccess(access) {
-		return metav1.ConditionFalse, "UnsupportedType", "External Access is not implemented by this kube-ssh version."
-	}
-	if len(access.Spec.Selector) == 0 {
-		return metav1.ConditionFalse, "InvalidSelector", "Pod Access requires a non-empty selector."
-	}
+func (c *AccessStatusController) validateAccess(ctx context.Context, access *sshv1.Access) (metav1.ConditionStatus, string, string) {
 	if len(access.Spec.Credentials) == 0 {
 		return metav1.ConditionFalse, "NoCredentials", "Access requires at least one credential entry."
 	}
@@ -309,12 +315,14 @@ func (c *AccessStatusController) validateAccess(access *sshv1.Access) (metav1.Co
 		if ok, message := validateCapabilityPolicy(credential.Capabilities); !ok {
 			return metav1.ConditionFalse, "InvalidCapabilityPolicy", fmt.Sprintf("Credential %q: %s", credential.Username, message)
 		}
-		if len(access.Spec.Containers) > 0 {
+	}
+	if access.Spec.Type == sshv1.AccessTypeExternal {
+		return metav1.ConditionTrue, "Valid", "Access spec is valid."
+	}
+	if len(access.Spec.Containers) > 0 {
+		for _, credential := range access.Spec.Credentials {
 			for _, container := range credential.Containers {
-				if container == "*" {
-					continue
-				}
-				if !containerAllowed(access.Spec.Containers, container) {
+				if container != "*" && !containerAllowed(access.Spec.Containers, container) {
 					return metav1.ConditionFalse, "InvalidContainerPolicy", fmt.Sprintf("Credential %q container %q is not exposed by the Access.", credential.Username, container)
 				}
 			}
@@ -346,7 +354,10 @@ func validForwardExpression(expression string) bool {
 		return true
 	}
 	host, port, err := net.SplitHostPort(expression)
-	return err == nil && host != "" && port != ""
+	if err != nil {
+		return false
+	}
+	return host != "" && port != ""
 }
 
 type credentialMaterial struct {

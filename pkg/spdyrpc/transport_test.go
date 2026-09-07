@@ -2,7 +2,6 @@ package spdyrpc
 
 import (
 	"encoding/json"
-	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -10,24 +9,25 @@ import (
 
 	"k8s.io/streaming/pkg/httpstream"
 	"k8s.io/streaming/pkg/httpstream/spdy"
-	"xiaoshiai.cn/kube-ssh/pkg/util"
 )
 
-func TestSPDYOverstdioConn(t *testing.T) {
-	serverSide, clientSide := newStdioConnPair()
+func TestSPDYTransport(t *testing.T) {
+	serverSide, clientSide := newTransportPair()
 	defer serverSide.Close()
 	defer clientSide.Close()
 
 	controlCh := make(chan rpcResponse, 1)
 	dataHeadersCh := make(chan http.Header, 1)
 	serverConn, err := spdy.NewServerConnection(serverSide, func(stream httpstream.Stream, replySent <-chan struct{}) error {
-		switch stream.Headers().Get(StreamTypeHeader) {
+		switch stream.Headers().
+			Get(StreamTypeHeader) {
 		case StreamTypeControl:
 			go func() {
 				<-replySent
 				defer stream.Close()
 				control := rpcResponse{}
-				if err := json.NewDecoder(stream).Decode(&control); err != nil {
+				if err := json.NewDecoder(stream).
+					Decode(&control); err != nil {
 					t.Errorf("decode control: %v", err)
 					return
 				}
@@ -39,7 +39,8 @@ func TestSPDYOverstdioConn(t *testing.T) {
 				dataHeadersCh <- stream.Headers()
 			}()
 		default:
-			t.Errorf("unexpected stream type %q", stream.Headers().Get(StreamTypeHeader))
+			t.Errorf("unexpected stream type %q", stream.Headers().
+				Get(StreamTypeHeader))
 		}
 		return nil
 	})
@@ -64,7 +65,8 @@ func TestSPDYOverstdioConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if err := json.NewEncoder(control).Encode(rpcResponse{OK: true, Payload: payload}); err != nil {
+	if err := json.NewEncoder(control).
+		Encode(rpcResponse{OK: true, Payload: payload}); err != nil {
 		t.Fatalf("encode control: %v", err)
 	}
 	_ = control.Close()
@@ -107,19 +109,6 @@ func TestSPDYOverstdioConn(t *testing.T) {
 	}
 }
 
-func newStdioConnPair() (net.Conn, net.Conn) {
-	clientToServerReader, clientToServerWriter := io.Pipe()
-	serverToClientReader, serverToClientWriter := io.Pipe()
-
-	server := util.NewStdioConn(clientToServerReader, serverToClientWriter, func() error {
-		_ = clientToServerReader.Close()
-		_ = serverToClientWriter.Close()
-		return nil
-	})
-	client := util.NewStdioConn(serverToClientReader, clientToServerWriter, func() error {
-		_ = serverToClientReader.Close()
-		_ = clientToServerWriter.Close()
-		return nil
-	})
-	return server, client
+func newTransportPair() (net.Conn, net.Conn) {
+	return net.Pipe()
 }

@@ -222,18 +222,22 @@ spec:
             - name: HELPER_REMOTE_DIR
               value: {{ . | quote }}
             {{- end }}
-            - name: BACKEND_MODE
-              value: {{ .Values.kubeSsh.backend.mode | quote }}
-            {{- if eq .Values.kubeSsh.backend.mode "node" }}
-            - name: NODE_PORT
-              value: {{ .Values.kubeSsh.backend.node.port | quote }}
-            - name: NODE_SERVER_NAME
+            - name: MANAGED_TRANSPORT
+              value: {{ .Values.kubeSsh.managed.transport | quote }}
+            {{- with .Values.kubeSsh.externalSSH.connectTimeout }}
+            - name: EXTERNAL_SSH_CONNECT_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if eq .Values.kubeSsh.managed.transport "cri" }}
+            - name: CRI_PORT
+              value: {{ .Values.kubeSsh.managed.cri.port | quote }}
+            - name: CRI_SERVER_NAME
               value: {{ include "kube-ssh.nodeServerName" . | quote }}
-            - name: NODE_CA_FILE
+            - name: CRI_CA_FILE
               value: /etc/kube-ssh/node-tls/ca.crt
-            - name: NODE_CERT_FILE
+            - name: CRI_CERT_FILE
               value: /etc/kube-ssh/node-tls/tls.crt
-            - name: NODE_KEY_FILE
+            - name: CRI_KEY_FILE
               value: /etc/kube-ssh/node-tls/tls.key
             {{- end }}
             - name: ACCESS_POLICY_ENABLED
@@ -282,14 +286,14 @@ spec:
                 name: {{ . | quote }}
             {{- end }}
           {{- end }}
-          {{- if or $hostKeyEnabled (eq .Values.kubeSsh.backend.mode "node") .Values.kubeSsh.extraVolumeMounts }}
+          {{- if or $hostKeyEnabled (eq .Values.kubeSsh.managed.transport "cri") .Values.kubeSsh.extraVolumeMounts }}
           volumeMounts:
             {{- if $hostKeyEnabled }}
             - name: host-key
               mountPath: {{ .Values.kubeSsh.hostKey.mountPath | quote }}
               readOnly: true
             {{- end }}
-            {{- if eq .Values.kubeSsh.backend.mode "node" }}
+            {{- if eq .Values.kubeSsh.managed.transport "cri" }}
             - name: node-tls
               mountPath: /etc/kube-ssh/node-tls
               readOnly: true
@@ -301,7 +305,7 @@ spec:
         {{- with .Values.kubeSsh.sidecars }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or $hostKeyEnabled (eq .Values.kubeSsh.backend.mode "node") .Values.kubeSsh.extraVolumes }}
+      {{- if or $hostKeyEnabled (eq .Values.kubeSsh.managed.transport "cri") .Values.kubeSsh.extraVolumes }}
       volumes:
         {{- if $hostKeyEnabled }}
         - name: host-key
@@ -309,7 +313,7 @@ spec:
             secretName: {{ include "kube-ssh.hostKeySecretName" . }}
             defaultMode: 0600
         {{- end }}
-        {{- if eq .Values.kubeSsh.backend.mode "node" }}
+        {{- if eq .Values.kubeSsh.managed.transport "cri" }}
         - name: node-tls
           secret:
             secretName: {{ include "kube-ssh.nodeTLSSecretName" . }}

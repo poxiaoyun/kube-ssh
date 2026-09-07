@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,7 +23,8 @@ func TestAsyncRecorderWritesPreparedSnapshot(t *testing.T) {
 		t.Fatalf("close recorder: %v", err)
 	}
 	var got Event
-	if err := json.NewDecoder(&output).Decode(&got); err != nil {
+	if err := json.NewDecoder(&output).
+		Decode(&got); err != nil {
 		t.Fatalf("decode event: %v", err)
 	}
 	if got.SchemaVersion != SchemaVersion || got.ID == "" || got.Time.IsZero() {
@@ -56,17 +56,6 @@ func TestAsyncRecorderDropsWhenQueueIsFull(t *testing.T) {
 	defer mu.Unlock()
 	if results[ResultDropped] != 1 || results[ResultWritten] != 2 {
 		t.Fatalf("results = %#v", results)
-	}
-}
-
-func TestChainSinkContinuesAfterError(t *testing.T) {
-	good := &collectSink{}
-	chain := ChainSink{errorSink{}, good}
-	if err := chain.Write(context.Background(), Event{Type: "test"}); err == nil {
-		t.Fatal("expected joined sink error")
-	}
-	if len(good.events) != 1 {
-		t.Fatalf("successful sink writes = %d", len(good.events))
 	}
 }
 
@@ -104,19 +93,6 @@ func (s *blockingSink) Write(context.Context, Event) error {
 }
 func (*blockingSink) Close(context.Context) error { return nil }
 
-type errorSink struct{}
-
-func (errorSink) Write(context.Context, Event) error { return errors.New("failed") }
-func (errorSink) Close(context.Context) error        { return nil }
-
-type collectSink struct{ events []Event }
-
-func (s *collectSink) Write(_ context.Context, event Event) error {
-	s.events = append(s.events, event)
-	return nil
-}
-func (*collectSink) Close(context.Context) error { return nil }
-
 type countingCloseSink struct{ closeCalls atomic.Int32 }
 
 func (*countingCloseSink) Write(context.Context, Event) error { return nil }
@@ -124,3 +100,52 @@ func (s *countingCloseSink) Close(context.Context) error {
 	s.closeCalls.Add(1)
 	return nil
 }
+
+func BenchmarkCloneEvent(b *testing.B) {
+	event := benchmarkEvent()
+	b.ReportAllocs()
+	for range b.N {
+		_ = cloneEvent(event)
+	}
+}
+
+func BenchmarkAsyncRecorder(b *testing.B) {
+	var dropped atomic.Int64
+	recorder := NewAsyncRecorder(benchmarkSink{}, DefaultQueueSize, func(result string) {
+		if result == ResultDropped {
+			dropped.Add(1)
+		}
+	})
+	event := benchmarkEvent()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		recorder.Record(context.Background(), event)
+	}
+	b.StopTimer()
+	if err := recorder.Close(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportMetric(float64(dropped.Load())/float64(max(b.N, 1))*100, "dropped_%")
+}
+
+func benchmarkEvent() Event {
+	exitCode := 0
+	return Event{
+		Type:          "operation.end",
+		Correlation:   Correlation{ConnectionID: "connection", OperationID: "operation"},
+		Connection:    &Connection{SSHUsername: "default.nginx", RemoteAddress: "127.0.0.1:12345"},
+		Actor:         &Actor{ID: "42", Name: "alice", Groups: []string{"developers"}, AuthenticationMethod: "publickey"},
+		Target:        &Target{Kind: "kube", Namespace: "default", Name: "nginx", Container: "app"},
+		Operation:     &Operation{Name: "session", Capability: "exec", Command: "id"},
+		Authorization: &Authorization{Decision: "allow"},
+		Outcome:       &Outcome{Result: "success", ExitCode: &exitCode},
+		Fields:        map[string]string{"command": "id"},
+	}
+}
+
+type benchmarkSink struct{}
+
+func (benchmarkSink) Write(context.Context, Event) error { return nil }
+
+func (benchmarkSink) Close(context.Context) error { return nil }

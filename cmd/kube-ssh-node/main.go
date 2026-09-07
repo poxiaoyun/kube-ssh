@@ -10,29 +10,32 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"xiaoshiai.cn/kube-ssh/pkg/node"
+	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend/cri"
+	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend/cri/node"
 	"xiaoshiai.cn/kube-ssh/pkg/version"
 )
 
 func main() {
-	if err := newCommand().Execute(); err != nil {
+	if err := newCommand().
+		Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func newCommand() *cobra.Command {
-	options := node.ServerOptions{
-		ListenAddress:      ":10443",
-		ManagementAddress:  ":18080",
+	options := node.Options{
+		ListenAddress:      fmt.Sprintf(":%d", cri.DefaultStreamPort),
+		ManagementAddress:  fmt.Sprintf(":%d", cri.DefaultMetricsPort),
 		HelperPath:         "/usr/local/bin/kube-ssh-helper",
 		HelperRemoteDir:    "/tmp",
-		ExpectedClientName: node.DefaultClientName,
+		ExpectedClientName: cri.DefaultClientName,
 		ShutdownTimeout:    30 * time.Second,
 		RuntimeTimeout:     10 * time.Second,
 	}
 	command := &cobra.Command{
-		Use: "kube-ssh-node", Short: "Node-local CRI streaming data plane for kube-ssh", Version: version.Get().String(),
+		Use: "kube-ssh-node", Short: "Node-local CRI streaming data plane for kube-ssh", Version: version.Get().
+			String(),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()

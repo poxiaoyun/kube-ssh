@@ -3,7 +3,7 @@
 {{- end -}}
 
 {{- define "kube-ssh.nodeEnabled" -}}
-{{- if or .Values.kubeSsh.node.enabled (eq .Values.kubeSsh.backend.mode "node") -}}true{{- end -}}
+{{- if eq .Values.kubeSsh.managed.transport "cri" -}}true{{- end -}}
 {{- end -}}
 
 {{- define "kube-ssh.nodeTLSSecretName" -}}
@@ -15,7 +15,7 @@
 {{- end -}}
 
 {{- define "kube-ssh.nodeServerName" -}}
-{{- default (printf "%s-node.%s.svc" (include "kube-ssh.fullname" .) .Release.Namespace) .Values.kubeSsh.backend.node.serverName -}}
+{{- default (printf "%s-node.%s.svc" (include "kube-ssh.fullname" .) .Release.Namespace) .Values.kubeSsh.managed.cri.serverName -}}
 {{- end -}}
 
 {{- define "kube-ssh.fullname" -}}

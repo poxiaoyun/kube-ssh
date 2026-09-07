@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -239,7 +240,8 @@ func NewPrometheusRecorder(registry *prometheus.Registry, opts PrometheusOptions
 		labelValue(opts.BuildInfo.Version),
 		labelValue(opts.BuildInfo.Commit),
 		labelValue(opts.BuildInfo.BuildDate),
-	).Set(1)
+	).
+		Set(1)
 	registerRuntimeCollectors(registry)
 	return recorder
 }
@@ -249,115 +251,145 @@ func (r *PrometheusRecorder) Handler() http.Handler {
 }
 
 func (r *PrometheusRecorder) AuthAttempt(credential, result string) {
-	r.authAttempts.WithLabelValues(labelValue(credential), labelValue(result)).Inc()
+	r.authAttempts.WithLabelValues(labelValue(credential), labelValue(result)).
+		Inc()
 }
 
 func (r *PrometheusRecorder) AuditDelivery(result string) {
-	r.auditEvents.WithLabelValues(labelValue(result)).Inc()
+	r.auditEvents.WithLabelValues(labelValue(result)).
+		Inc()
 }
 
 func (r *PrometheusRecorder) ConnectionOpened(method string) {
 	method = labelValue(method)
-	r.connections.WithLabelValues(method).Inc()
-	r.activeConnections.WithLabelValues(method).Inc()
+	r.connections.WithLabelValues(method).
+		Inc()
+	r.activeConnections.WithLabelValues(method).
+		Inc()
 }
 
 func (r *PrometheusRecorder) ConnectionClosed(method string) {
-	r.activeConnections.WithLabelValues(labelValue(method)).Dec()
+	r.activeConnections.WithLabelValues(labelValue(method)).
+		Dec()
 }
 
 func (r *PrometheusRecorder) OperationStarted(kind, capability string) {
-	r.activeOperations.WithLabelValues(labelValue(kind), labelValue(capability)).Inc()
+	r.activeOperations.WithLabelValues(labelValue(kind), labelValue(capability)).
+		Inc()
 }
 
 func (r *PrometheusRecorder) OperationFinished(kind, capability, result string, duration time.Duration) {
 	kind = labelValue(kind)
 	capability = labelValue(capability)
 	result = labelValue(result)
-	r.operations.WithLabelValues(kind, capability, result).Inc()
-	r.activeOperations.WithLabelValues(kind, capability).Dec()
-	r.operationDuration.WithLabelValues(kind, capability, result).Observe(duration.Seconds())
+	r.operations.WithLabelValues(kind, capability, result).
+		Inc()
+	r.activeOperations.WithLabelValues(kind, capability).
+		Dec()
+	r.operationDuration.WithLabelValues(kind, capability, result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) BackendOperationFinished(operation, result string, duration time.Duration) {
 	operation = labelValue(operation)
 	result = labelValue(result)
-	r.backendOperations.WithLabelValues(operation, result).Inc()
-	r.backendOperationDuration.WithLabelValues(operation, result).Observe(duration.Seconds())
+	r.backendOperations.WithLabelValues(operation, result).
+		Inc()
+	r.backendOperationDuration.WithLabelValues(operation, result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) StreamOpened(kind string) {
 	kind = labelValue(kind)
-	r.streams.WithLabelValues(kind).Inc()
-	r.activeStreams.WithLabelValues(kind).Inc()
+	r.streams.WithLabelValues(kind).
+		Inc()
+	r.activeStreams.WithLabelValues(kind).
+		Inc()
 }
 
 func (r *PrometheusRecorder) StreamClosed(kind string) {
-	r.activeStreams.WithLabelValues(labelValue(kind)).Dec()
+	r.activeStreams.WithLabelValues(labelValue(kind)).
+		Dec()
 }
 
 func (r *PrometheusRecorder) StreamBytes(kind, direction string, n int64) {
 	if n <= 0 {
 		return
 	}
-	r.streamBytes.WithLabelValues(labelValue(kind), labelValue(direction)).Add(float64(n))
+	r.streamBytes.WithLabelValues(labelValue(kind), labelValue(direction)).
+		Add(float64(n))
 }
 
 func (r *PrometheusRecorder) HelperAcquired(capability string) {
-	r.activeHelpers.WithLabelValues(labelValue(capability)).Inc()
+	r.activeHelpers.WithLabelValues(labelValue(capability)).
+		Inc()
 }
 
 func (r *PrometheusRecorder) HelperAcquireFinished(capability, result string, duration time.Duration) {
 	capability = labelValue(capability)
 	result = labelValue(result)
-	r.helperAcquire.WithLabelValues(capability, result).Inc()
-	r.helperAcquireDuration.WithLabelValues(capability, result).Observe(duration.Seconds())
+	r.helperAcquire.WithLabelValues(capability, result).
+		Inc()
+	r.helperAcquireDuration.WithLabelValues(capability, result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) HelperReleased(capability, result string, duration time.Duration) {
 	capability = labelValue(capability)
 	result = labelValue(result)
-	r.activeHelpers.WithLabelValues(capability).Dec()
-	r.helperRelease.WithLabelValues(capability, result).Inc()
-	r.helperUsageDuration.WithLabelValues(capability, result).Observe(duration.Seconds())
+	r.activeHelpers.WithLabelValues(capability).
+		Dec()
+	r.helperRelease.WithLabelValues(capability, result).
+		Inc()
+	r.helperUsageDuration.WithLabelValues(capability, result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) AccessPolicyCacheSyncFinished(resource, result string, duration time.Duration) {
 	resource = labelValue(resource)
 	result = labelValue(result)
-	r.accessPolicyCacheSync.WithLabelValues(resource, result).Inc()
-	r.accessPolicyCacheSyncDur.WithLabelValues(resource, result).Observe(duration.Seconds())
+	r.accessPolicyCacheSync.WithLabelValues(resource, result).
+		Inc()
+	r.accessPolicyCacheSyncDur.WithLabelValues(resource, result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) AccessPolicyObjects(resource string, count int) {
-	r.accessPolicyObjects.WithLabelValues(labelValue(resource)).Set(float64(count))
+	r.accessPolicyObjects.WithLabelValues(labelValue(resource)).
+		Set(float64(count))
 }
 
 func (r *PrometheusRecorder) AccessPolicyAuthFinished(credential, result string, duration time.Duration) {
 	credential = labelValue(credential)
 	result = labelValue(result)
-	r.accessPolicyAuth.WithLabelValues(credential, result).Inc()
-	r.accessPolicyAuthDuration.WithLabelValues(credential, result).Observe(duration.Seconds())
+	r.accessPolicyAuth.WithLabelValues(credential, result).
+		Inc()
+	r.accessPolicyAuthDuration.WithLabelValues(credential, result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) AccessPolicyResolveFinished(result string, duration time.Duration) {
 	result = labelValue(result)
-	r.accessPolicyResolve.WithLabelValues(result).Inc()
-	r.accessPolicyResolveDur.WithLabelValues(result).Observe(duration.Seconds())
+	r.accessPolicyResolve.WithLabelValues(result).
+		Inc()
+	r.accessPolicyResolveDur.WithLabelValues(result).
+		Observe(duration.Seconds())
 }
 
 func (r *PrometheusRecorder) AccessPolicyAuthorizeFinished(capability, decision, result string, duration time.Duration) {
 	capability = labelValue(capability)
 	decision = labelValue(decision)
 	result = labelValue(result)
-	r.accessPolicyAuthorize.WithLabelValues(capability, decision, result).Inc()
-	r.accessPolicyAuthorizeDur.WithLabelValues(capability, decision, result).Observe(duration.Seconds())
+	r.accessPolicyAuthorize.WithLabelValues(capability, decision, result).
+		Inc()
+	r.accessPolicyAuthorizeDur.WithLabelValues(capability, decision, result).
+		Observe(duration.Seconds())
 }
 
 func registerRuntimeCollectors(registry *prometheus.Registry) {
 	for _, collector := range []prometheus.Collector{
-		prometheus.NewGoCollector(),
-		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	} {
 		if err := registry.Register(collector); err != nil {
 			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
