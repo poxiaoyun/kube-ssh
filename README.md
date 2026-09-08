@@ -430,6 +430,30 @@ system trust roots and cannot be combined with `insecureSkipTLSVerify`.
 Webhook URLs must point directly to the handler; redirects are returned as errors
 and are never followed. The request timeout defaults to two seconds.
 
+## Execution Identity
+
+The SSH username selects a target; it does not select a Linux account.
+`spec.credentials[].username`, `uid`, and `groups` describe the authenticated
+caller for authorization and audit, not the target container's Linux UID/GID.
+
+For Pod Access, both `apiserver` and `cri` run shells, commands, and helper
+processes as the target container's configured user. The UID comes from the
+container's `securityContext.runAsUser`, then the Pod-level setting, then the
+image's default user. Configure `runAsUser` and `runAsGroup` on the workload to
+set the execution identity; container-level settings override Pod-level
+settings. These settings apply to the container, not individual SSH sessions.
+See [Kubernetes security contexts](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/).
+
+kube-ssh does not switch Linux users based on the authenticated caller.
+Different credentials accessing the same container therefore share its default
+execution identity and filesystem permissions; they do not provide per-user
+OS isolation. If the container's configured user is root, SSH sessions start
+as root, regardless of the credential's username.
+
+For External Access, `spec.endpoints[].username` selects the upstream SSH login
+account. The upstream `sshd` owns the operating-system login and permissions;
+the inbound credential identity does not select that account.
+
 ## Access Policy
 
 Credentials may be declared inline:
