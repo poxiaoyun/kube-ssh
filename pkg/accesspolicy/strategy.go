@@ -316,7 +316,8 @@ func selectorMatches(selector, values map[string]string) bool {
 	if len(selector) == 0 {
 		return true
 	}
-	return labels.SelectorFromSet(selector).Matches(labels.Set(values))
+	return labels.SelectorFromSet(selector).
+		Matches(labels.Set(values))
 }
 
 func strategyType(access *sshv1.Access) sshv1.AccessStrategyType {

@@ -30,7 +30,8 @@ func NewStdoutSink(w io.Writer) *StdoutSink {
 func (r *StdoutSink) Write(_ context.Context, event Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return json.NewEncoder(r.w).Encode(event)
+	return json.NewEncoder(r.w).
+		Encode(event)
 }
 
 func (*StdoutSink) Close(context.Context) error { return nil }

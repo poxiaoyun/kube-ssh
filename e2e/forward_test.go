@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"fmt"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,7 +41,8 @@ func TestRemoteForwardAndCancel(t *testing.T) {
 	user := f.Namespace + ".shell.app"
 	local := f.StartLocalHTTPServer("remote-forward\n")
 	remotePort := freePort(t)
-	controlPath := fmt.Sprintf("/tmp/kssh-%d.sock", time.Now().UnixNano())
+	controlPath := fmt.Sprintf("/tmp/kssh-%d.sock", time.Now().
+		UnixNano())
 	t.Cleanup(func() { _ = os.Remove(controlPath) })
 	forwardSpec := fmt.Sprintf("127.0.0.1:%d:%s", remotePort, local.Address)
 
@@ -58,4 +61,47 @@ func TestRemoteForwardAndCancel(t *testing.T) {
 		t.Fatalf("remote forward cancel failed:\n%s", cancel.Dump())
 	}
 	ssh.Stop()
+}
+
+func TestAuthorizationDeniesForwarding(t *testing.T) {
+	f := NewFrameworkWithOptions(t, FrameworkOptions{
+		GatewayArgs: []string{
+			"--authentication-anonymous",
+			"--policy-limit-capability", "shell",
+		},
+	})
+	user := f.Namespace + ".shell.app"
+
+	localPort := freePort(t)
+	localAddress := fmt.Sprintf("127.0.0.1:%d", localPort)
+	localForward := f.StartSSH(user, "-N", "-o", "ExitOnForwardFailure=yes", "-L", localAddress+":127.0.0.1:18080")
+	f.waitTCP("127.0.0.1", localPort, 10*time.Second)
+	localResult := f.HTTPGetTimeout("http://"+localAddress+"/", 3*time.Second)
+	if localResult.Code == http.StatusOK {
+		t.Fatalf("local forward unexpectedly allowed:\n%s", localResult.Dump())
+	}
+	localForward.Stop()
+
+	local := f.StartLocalHTTPServer("denied\n")
+	remoteForward := f.SSHOptionsTimeout(5*time.Second, user, "-N", "-o", "ExitOnForwardFailure=yes", "-R", fmt.Sprintf("127.0.0.1:%d:%s", freePort(t), local.Address))
+	if remoteForward.Code == 0 {
+		t.Fatalf("remote forward unexpectedly allowed:\n%s", remoteForward.Dump())
+	}
+}
+
+func waitRemoteForwardBody(t *testing.T, f *Framework, user string, port int, want string) {
+	t.Helper()
+	deadline := time.Now().
+		Add(30 * time.Second)
+	var last Result
+	command := fmt.Sprintf("wget -qO- http://127.0.0.1:%d/", port)
+	for time.Now().
+		Before(deadline) {
+		last = f.SSH(user, command)
+		if last.Code == 0 && strings.Contains(last.Stdout, want) {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for remote forward body %q; last result:\n%s", want, last.Dump())
 }

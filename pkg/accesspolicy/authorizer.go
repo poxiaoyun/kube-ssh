@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
@@ -72,7 +73,7 @@ func capabilityAllowed(policy sshv1.CapabilityPolicy, defaults CapabilityDefault
 	if len(allowedCapabilities) == 0 {
 		allowedCapabilities = defaults.Allow
 	}
-	if len(allowedCapabilities) > 0 && !containsCapability(allowedCapabilities, capability) && !containsCapability(allowedCapabilities, "*") {
+	if len(allowedCapabilities) > 0 && !slices.Contains(allowedCapabilities, capability) && !slices.Contains(allowedCapabilities, "*") {
 		return false, "capability not allowed"
 	}
 	switch capability {
@@ -83,7 +84,7 @@ func capabilityAllowed(policy sshv1.CapabilityPolicy, defaults CapabilityDefault
 		}
 		if len(allow) > 0 {
 			destination := net.JoinHostPort(GetExtra(attrs.Extra, "destination_host"), GetExtra(attrs.Extra, "destination_port"))
-			if !bindAllowed(allow, destination) {
+			if !wildcard.MatchAny(allow, destination) {
 				return false, "local forward destination not allowed"
 			}
 		}
@@ -94,25 +95,12 @@ func capabilityAllowed(policy sshv1.CapabilityPolicy, defaults CapabilityDefault
 		}
 		if len(allow) > 0 {
 			bind := net.JoinHostPort(GetExtra(attrs.Extra, "bind_host"), GetExtra(attrs.Extra, "bind_port"))
-			if !bindAllowed(allow, bind) {
+			if !wildcard.MatchAny(allow, bind) {
 				return false, "remote forward bind not allowed"
 			}
 		}
 	}
 	return true, ""
-}
-
-func containsCapability(values []sshv1.Capability, capability sshv1.Capability) bool {
-	for _, value := range values {
-		if value == capability {
-			return true
-		}
-	}
-	return false
-}
-
-func bindAllowed(patterns []string, bind string) bool {
-	return wildcard.MatchAny(patterns, bind)
 }
 
 func resourceName(resources []authz.AttributeResource, resource string) string {

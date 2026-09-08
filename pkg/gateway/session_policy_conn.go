@@ -80,7 +80,9 @@ func (c *sessionPolicyConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *sessionPolicyConn) SetWriteDeadline(time.Time) error { return nil }
 
 func (c *sessionPolicyConn) touch() {
-	c.lastActivityNS.Store(time.Since(c.started).Nanoseconds())
+	c.lastActivityNS.Store(time.
+		Since(c.started).
+		Nanoseconds())
 }
 
 func (c *sessionPolicyConn) onTimer() {

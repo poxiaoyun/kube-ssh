@@ -172,8 +172,7 @@ func TestClientPostTLS(t *testing.T) {
 			}
 			err = client.Post(t.Context(), nil, nil)
 			if test.untrusted {
-				var unknownAuthority x509.UnknownAuthorityError
-				if !errors.As(err, &unknownAuthority) {
+				if _, ok := errors.AsType[x509.UnknownAuthorityError](err); !ok {
 					t.Fatalf("Post() error = %v, want unknown certificate authority", err)
 				}
 				return

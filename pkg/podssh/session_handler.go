@@ -18,6 +18,7 @@ import (
 const maxSignalBufferSize = 128
 
 type sessionRequestTyper interface {
+	// SessionRequestType identifies the request that started this session.
 	SessionRequestType() string
 }
 

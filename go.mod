@@ -2,6 +2,17 @@ module xiaoshiai.cn/kube-ssh
 
 go 1.26.0
 
+tool (
+	k8s.io/code-generator/cmd/applyconfiguration-gen
+	k8s.io/code-generator/cmd/client-gen
+	k8s.io/code-generator/cmd/conversion-gen
+	k8s.io/code-generator/cmd/deepcopy-gen
+	k8s.io/code-generator/cmd/defaulter-gen
+	k8s.io/code-generator/cmd/informer-gen
+	k8s.io/code-generator/cmd/lister-gen
+	k8s.io/code-generator/cmd/validation-gen
+)
+
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
 	github.com/gliderlabs/ssh v0.3.8
@@ -21,7 +32,6 @@ require (
 	k8s.io/apimachinery v0.36.2
 	k8s.io/apiserver v0.36.2
 	k8s.io/client-go v0.36.2
-	k8s.io/code-generator v0.36.2
 	k8s.io/cri-api v0.36.2
 	k8s.io/streaming v0.36.2
 	sigs.k8s.io/controller-runtime v0.24.1
@@ -77,6 +87,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiextensions-apiserver v0.36.0 // indirect
+	k8s.io/code-generator v0.36.2 // indirect
 	k8s.io/gengo/v2 v2.0.0-20250922181213-ec3ebc5fd46b // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect

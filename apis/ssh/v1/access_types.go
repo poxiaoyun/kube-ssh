@@ -277,7 +277,7 @@ type SessionPolicy struct {
 
 	// IdleTimeout is the maximum idle period for SSH connections using this
 	// Access. Client keepalives and SSH traffic may count as activity. This
-	// field can only narrow the server-wide idle timeout.
+	// field is bounded by the gateway's idle-timeout limit.
 	//
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Format=duration
@@ -286,7 +286,7 @@ type SessionPolicy struct {
 	// MaxDuration is the maximum lifetime for SSH connections using this Access.
 	// When exceeded, kube-ssh closes the whole SSH connection, including shell,
 	// exec, sftp, local-forward, and remote-forward channels. This field can
-	// only narrow the server-wide max duration.
+	// not exceed the gateway's maximum-duration limit.
 	//
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Format=duration
@@ -378,13 +378,14 @@ type LocalSecretKeyRef struct {
 
 // CapabilityPolicy limits SSH operations for a credential.
 //
-// Omitted fields mean no additional restriction from this access object. The
-// default is to allow every kube-ssh capability. Set Allow to switch this
-// credential into whitelist mode. To restrict forwarding, set the corresponding
-// forwarding policy.
+// Omitted or empty allowlists inherit the gateway defaults. Set Allow to
+// override the default capability list for this credential, subject to the
+// gateway's hard limits. Set the corresponding forwarding policy to override
+// the default destinations or binds within those limits.
 type CapabilityPolicy struct {
 	// Allow is the list of SSH capabilities allowed for this credential. Omitted
-	// or empty means all capabilities are allowed by this access object.
+	// or empty inherits the gateway defaults, which exclude ssh_extension unless
+	// it is explicitly enabled.
 	//
 	// +listType=set
 	Allow []Capability `json:"allow,omitempty"`
@@ -423,7 +424,7 @@ type LocalForwardPolicy struct {
 	//
 	// An asterisk matches any sequence of characters; "*" allows every value.
 	//
-	// Empty means any destination accepted by the selected target is allowed.
+	// Omitted or empty inherits the gateway's allowed destinations.
 	//
 	// +listType=set
 	AllowDestinations []string `json:"allowDestinations,omitempty"`
@@ -438,7 +439,7 @@ type RemoteForwardPolicy struct {
 	//
 	// An asterisk matches any sequence of characters; "*" allows every value.
 	//
-	// Empty means any bind accepted by the selected target is allowed.
+	// Omitted or empty inherits the gateway's allowed binds.
 	//
 	// +listType=set
 	AllowBinds []string `json:"allowBinds,omitempty"`

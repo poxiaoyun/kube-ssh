@@ -20,8 +20,8 @@ package v1
 
 // AccessListerExpansion allows custom methods to be added to
 // AccessLister.
-type AccessListerExpansion interface{}
+type AccessListerExpansion any
 
 // AccessNamespaceListerExpansion allows custom methods to be added to
 // AccessNamespaceLister.
-type AccessNamespaceListerExpansion interface{}
+type AccessNamespaceListerExpansion any

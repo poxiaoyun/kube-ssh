@@ -62,16 +62,19 @@ type RemoteForwardRequest struct {
 	BindPort uint32
 }
 
+// RemoteForwardConnInfo identifies the peer of a target-side connection.
 type RemoteForwardConnInfo struct {
 	OriginHost string
 	OriginPort uint32
 }
 
+// RemoteForward owns a target-side listener and its forwarding transport.
 type RemoteForward interface {
 	// ActualPort returns the bound target-side port.
 	ActualPort() uint32
 	// Accept returns the next target-side connection.
 	Accept(ctx context.Context) (ioproxy.HalfCloser, RemoteForwardConnInfo, error)
+
 	// Cancel stops accepting new connections for this remote forward. Active
 	// connections should be allowed to drain.
 	Cancel() error
@@ -95,6 +98,7 @@ type AgentForward interface {
 	Close() error
 }
 
+// StreamRequest binds a file-transfer or helper session to its target and I/O.
 type StreamRequest struct {
 	Target *target.Target
 	Stdin  io.Reader
@@ -102,6 +106,7 @@ type StreamRequest struct {
 	Stderr io.Writer
 }
 
+// SCPRequest supplies the legacy SCP arguments and session streams.
 type SCPRequest struct {
 	StreamRequest
 	Args []string
@@ -119,12 +124,14 @@ type HelperExecRequest struct {
 type Backend interface {
 	// Exec runs one command or shell in the target container.
 	Exec(ctx context.Context, req ExecRequest) (int, error)
+
 	// PortForward opens a direct-tcpip stream from the target network context.
 	PortForward(ctx context.Context, req PortForwardRequest) (ioproxy.HalfCloser, error)
 	// RemoteForward opens a target-side listener.
 	RemoteForward(ctx context.Context, req RemoteForwardRequest) (RemoteForward, error)
 	// AgentForward opens a target-local agent socket.
 	AgentForward(ctx context.Context, req AgentForwardRequest) (AgentForward, error)
+
 	// SFTP serves one SFTP subsystem session.
 	SFTP(ctx context.Context, req StreamRequest) (int, error)
 	// SCP serves one legacy SCP session.
@@ -135,10 +142,11 @@ type Backend interface {
 type Transport interface {
 	// Exec runs a command in the target container.
 	Exec(ctx context.Context, req ExecRequest) (int, error)
-	// PortForward opens a stream to one port in the target Pod network namespace.
-	PortForward(ctx context.Context, req PodPortForwardRequest) (ioproxy.HalfCloser, error)
 	// ExecHelper prepares a compatible helper and runs one helper command.
 	ExecHelper(ctx context.Context, req HelperExecRequest) (int, error)
+
+	// PortForward opens a stream to one port in the target Pod network namespace.
+	PortForward(ctx context.Context, req PodPortForwardRequest) (ioproxy.HalfCloser, error)
 }
 
 // Executor implements Pod SSH operations over one transport.

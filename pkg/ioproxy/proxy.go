@@ -51,6 +51,9 @@ func Proxy(ctx context.Context, a, b HalfCloser) error {
 	return ProxyWithObserver(ctx, a, b, nil, "", "", "")
 }
 
+// ProxyWithObserver performs Proxy's stream lifecycle and reports stream opens,
+// closes, and byte counts under the supplied kind and direction labels. A nil
+// observer disables reporting.
 func ProxyWithObserver(ctx context.Context, a, b HalfCloser, observer StreamObserver, kind, aToBDirection, bToADirection string) error {
 	if observer != nil {
 		observer.StreamOpened(kind)

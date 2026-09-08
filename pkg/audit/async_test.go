@@ -104,7 +104,7 @@ func (s *countingCloseSink) Close(context.Context) error {
 func BenchmarkCloneEvent(b *testing.B) {
 	event := benchmarkEvent()
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		_ = cloneEvent(event)
 	}
 }
@@ -118,11 +118,9 @@ func BenchmarkAsyncRecorder(b *testing.B) {
 	})
 	event := benchmarkEvent()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		recorder.Record(context.Background(), event)
 	}
-	b.StopTimer()
 	if err := recorder.Close(context.Background()); err != nil {
 		b.Fatal(err)
 	}

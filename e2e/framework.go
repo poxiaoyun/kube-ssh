@@ -5,12 +5,10 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,9 +18,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"xiaoshiai.cn/kube-ssh/pkg/authn"
-	"xiaoshiai.cn/kube-ssh/pkg/authz"
 )
 
 const (
@@ -39,7 +34,6 @@ type Framework struct {
 	GatewayPort int
 	SSHConfig   string
 	GatewayArgs []string
-	gatewayCmd  *exec.Cmd
 }
 
 type FrameworkOptions struct {
@@ -53,20 +47,6 @@ type BackgroundCommand struct {
 	Stderr *bytes.Buffer
 	Stdin  io.Closer
 	cancel context.CancelFunc
-}
-
-type LocalHTTPServer struct {
-	Address string
-	server  *http.Server
-}
-
-type TestWebhookServer struct {
-	URL                    string
-	server                 *http.Server
-	Authenticate           func(authn.WebhookAuthenticateRequest) authn.WebhookAuthenticateResponse
-	Authorize              func(authz.WebhookAuthorizeRequest) authz.WebhookAuthorizeResponse
-	AuthenticationRequests []authn.WebhookAuthenticateRequest
-	AuthorizationRequests  []authz.WebhookAuthorizeRequest
 }
 
 type Result struct {
@@ -108,10 +88,11 @@ func NewFrameworkWithOptions(t *testing.T, opts FrameworkOptions) *Framework {
 	suite := ensureE2ESuite(t)
 	workDir := t.TempDir()
 	f := &Framework{
-		T:           t,
-		WorkDir:     workDir,
-		Namespace:   suite.Namespace,
-		TestID:      fmt.Sprintf("%s-%d", sanitizeTestName(t.Name()), time.Now().UnixNano()),
+		T:         t,
+		WorkDir:   workDir,
+		Namespace: suite.Namespace,
+		TestID: fmt.Sprintf("%s-%d", sanitizeTestName(t.Name()), time.Now().
+			UnixNano()),
 		Kubeconfig:  suite.Kubeconfig,
 		GatewayArgs: append([]string{}, opts.GatewayArgs...),
 	}
@@ -141,8 +122,9 @@ func initE2ESuite() (suiteConfig, error) {
 		return suiteConfig{}, fmt.Errorf("create suite workdir: %w", err)
 	}
 	config := suiteConfig{
-		WorkDir:    workDir,
-		Namespace:  fmt.Sprintf("%s-%d", testNamespaceBase, time.Now().UnixNano()),
+		WorkDir: workDir,
+		Namespace: fmt.Sprintf("%s-%d", testNamespaceBase, time.Now().
+			UnixNano()),
 		Kubeconfig: os.Getenv("KUBECONFIG"),
 	}
 	if !useExistingCluster() {
@@ -168,8 +150,7 @@ func cleanupE2ESuite() {
 }
 
 func (f *Framework) Kubectl(args ...string) Result {
-	allArgs := append([]string{}, args...)
-	return f.runCommand(30*time.Second, "kubectl", allArgs, nil, map[string]string{"KUBECONFIG": f.Kubeconfig})
+	return runE2ECommand(30*time.Second, "kubectl", args, nil, map[string]string{"KUBECONFIG": f.Kubeconfig})
 }
 
 // EnsureDefaultFixture prepares the shared namespace, shell pod, and service.
@@ -191,217 +172,11 @@ func (f *Framework) ApplyManifest(manifest string) {
 	}
 }
 
-func (f *Framework) InstallAccessCRD() {
-	f.T.Helper()
-	crdPath := filepath.Join("..", "deploy", "kube-ssh", "crds", "ssh.xiaoshiai.cn_accesses.yaml")
-	result := f.Kubectl("apply", "-f", crdPath)
-	if result.Code != 0 {
-		f.T.Fatalf("install Access CRD failed:\n%s", result.Dump())
-	}
-}
-
-func (f *Framework) WaitAccessReady(name string, timeout time.Duration) {
-	f.T.Helper()
-	timeoutArg := fmt.Sprintf("--timeout=%s", timeout)
-	result := f.Kubectl("-n", f.Namespace, "wait", "--for=condition=Ready", "access/"+name, timeoutArg)
-	if result.Code == 0 {
-		return
-	}
-	describe := f.Kubectl("-n", f.Namespace, "get", "access/"+name, "-o", "yaml")
-	f.T.Fatalf("access/%s not ready:\n%s\n%s", name, result.Dump(), describe.Dump())
-}
-
 func (f *Framework) WaitPodReady(name string, timeout time.Duration) {
 	f.T.Helper()
 	if err := waitPodReady(f.Kubeconfig, f.Namespace, name, timeout); err != nil {
 		f.T.Fatalf("wait pod/%s ready: %v", name, err)
 	}
-}
-
-func (f *Framework) SSH(user string, args ...string) Result {
-	allArgs := []string{"-F", f.SSHConfig, "-l", user, "kube-ssh-e2e"}
-	allArgs = append(allArgs, args...)
-	return f.runCommand(30*time.Second, "ssh", allArgs, nil, nil)
-}
-
-func (f *Framework) SSHOptions(user string, args ...string) Result {
-	return f.SSHOptionsTimeout(30*time.Second, user, args...)
-}
-
-func (f *Framework) SSHOptionsTimeout(timeout time.Duration, user string, args ...string) Result {
-	allArgs := []string{"-F", f.SSHConfig}
-	allArgs = append(allArgs, args...)
-	allArgs = append(allArgs, "-l", user, "kube-ssh-e2e")
-	return f.runCommand(timeout, "ssh", allArgs, nil, nil)
-}
-
-func (f *Framework) Shell(user string, input string) Result {
-	args := []string{"-F", f.SSHConfig, "-l", user, "kube-ssh-e2e"}
-	return f.runCommand(30*time.Second, "ssh", args, strings.NewReader(input), nil)
-}
-
-func (f *Framework) SCP(args ...string) Result {
-	allArgs := []string{"-O", "-F", f.SSHConfig}
-	allArgs = append(allArgs, args...)
-	return f.runCommand(45*time.Second, "scp", allArgs, nil, nil)
-}
-
-func (f *Framework) StartSCP(args ...string) *BackgroundCommand {
-	allArgs := []string{"-O", "-F", f.SSHConfig}
-	allArgs = append(allArgs, args...)
-	return f.startCommand("scp", allArgs, nil)
-}
-
-func (f *Framework) SFTPBatch(user, batch string) Result {
-	batchPath := filepath.Join(f.WorkDir, "sftp.batch")
-	if err := os.WriteFile(batchPath, []byte(batch), 0o600); err != nil {
-		f.T.Fatalf("write sftp batch: %v", err)
-	}
-	args := []string{"-F", f.SSHConfig, "-b", batchPath, user + "@kube-ssh-e2e"}
-	return f.runCommand(45*time.Second, "sftp", args, nil, nil)
-}
-
-func (f *Framework) StartSSH(user string, args ...string) *BackgroundCommand {
-	allArgs := []string{"-F", f.SSHConfig}
-	allArgs = append(allArgs, args...)
-	allArgs = append(allArgs, "-l", user, "kube-ssh-e2e")
-	return f.startCommand("ssh", allArgs, nil)
-}
-
-func (f *Framework) StartSSHCommandWithStdin(user, command string) *BackgroundCommand {
-	stdinReader, stdinWriter := io.Pipe()
-	args := []string{"-F", f.SSHConfig, "-l", user, "kube-ssh-e2e", command}
-	cmd := f.startCommandWithStdin("ssh", args, stdinReader, nil)
-	cmd.Stdin = stdinWriter
-	return cmd
-}
-
-func (f *Framework) StartSFTP(user string) *BackgroundCommand {
-	stdinReader, stdinWriter := io.Pipe()
-	args := []string{"-F", f.SSHConfig, user + "@kube-ssh-e2e"}
-	cmd := f.startCommandWithStdin("sftp", args, stdinReader, nil)
-	cmd.Stdin = stdinWriter
-	return cmd
-}
-
-func (f *Framework) HTTPGet(url string) Result {
-	return f.HTTPGetTimeout(url, 30*time.Second)
-}
-
-func (f *Framework) HTTPGetTimeout(url string, timeout time.Duration) Result {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return Result{Code: -1, Stderr: err.Error()}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return Result{Code: -1, Stderr: err.Error()}
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return Result{Code: -1, Stderr: err.Error()}
-	}
-	return Result{Code: resp.StatusCode, Stdout: string(data)}
-}
-
-func (f *Framework) WaitHTTPBody(url, body string, timeout time.Duration) {
-	f.T.Helper()
-	deadline := time.Now().Add(timeout)
-	var last Result
-	for time.Now().Before(deadline) {
-		last = f.HTTPGet(url)
-		if last.Code == http.StatusOK && last.Stdout == body {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	f.T.Fatalf("timed out waiting for %s body %q; last result:\n%s", url, body, last.Dump())
-}
-
-func (f *Framework) StartLocalHTTPServer(body string) *LocalHTTPServer {
-	f.T.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		f.T.Fatalf("listen local http: %v", err)
-	}
-	server := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(w, body)
-		}),
-	}
-	go func() {
-		err := server.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			f.T.Logf("local http server error: %v", err)
-		}
-	}()
-	f.T.Cleanup(func() {
-		_ = server.Shutdown(context.Background())
-	})
-	return &LocalHTTPServer{
-		Address: listener.Addr().String(),
-		server:  server,
-	}
-}
-
-func (f *Framework) StartWebhookServer() *TestWebhookServer {
-	f.T.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		f.T.Fatalf("listen webhook: %v", err)
-	}
-	webhook := &TestWebhookServer{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/authenticate", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		req := authn.WebhookAuthenticateRequest{}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		webhook.AuthenticationRequests = append(webhook.AuthenticationRequests, req)
-		resp := authn.WebhookAuthenticateResponse{Reason: "not configured"}
-		if webhook.Authenticate != nil {
-			resp = webhook.Authenticate(req)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		req := authz.WebhookAuthorizeRequest{}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		webhook.AuthorizationRequests = append(webhook.AuthorizationRequests, req)
-		resp := authz.WebhookAuthorizeResponse{Decision: authz.DecisionNoOpinion}
-		if webhook.Authorize != nil {
-			resp = webhook.Authorize(req)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	server := &http.Server{Handler: mux}
-	webhook.URL = "http://" + listener.Addr().String()
-	webhook.server = server
-	go func() {
-		err := server.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			f.T.Logf("webhook server error: %v", err)
-		}
-	}()
-	f.T.Cleanup(func() {
-		_ = server.Shutdown(context.Background())
-	})
-	return webhook
 }
 
 func ensureKindCluster(kubeconfig string) error {
@@ -532,7 +307,7 @@ func waitPodReady(kubeconfig, namespace, pod string, timeout time.Duration) erro
 
 func (f *Framework) startGateway() {
 	hostKey := filepath.Join(f.WorkDir, "host_ed25519")
-	genHost := f.runCommand(30*time.Second, "ssh-keygen", []string{"-q", "-t", "ed25519", "-N", "", "-f", hostKey}, nil, nil)
+	genHost := runE2ECommand(30*time.Second, "ssh-keygen", []string{"-q", "-t", "ed25519", "-N", "", "-f", hostKey}, nil, nil)
 	if genHost.Code != 0 {
 		f.T.Fatalf("ssh-keygen host key failed:\n%s", genHost.Dump())
 	}
@@ -557,7 +332,6 @@ func (f *Framework) startGateway() {
 	if err := cmd.Start(); err != nil {
 		f.T.Fatalf("start kube-ssh: %v", err)
 	}
-	f.gatewayCmd = cmd
 	f.T.Cleanup(func() {
 		cancel()
 		_ = cmd.Wait()
@@ -571,7 +345,7 @@ func (f *Framework) startGateway() {
 
 func (f *Framework) writeSSHConfig() {
 	clientKey := filepath.Join(f.WorkDir, "client_ed25519")
-	genClient := f.runCommand(30*time.Second, "ssh-keygen", []string{"-q", "-t", "ed25519", "-N", "", "-f", clientKey}, nil, nil)
+	genClient := runE2ECommand(30*time.Second, "ssh-keygen", []string{"-q", "-t", "ed25519", "-N", "", "-f", clientKey}, nil, nil)
 	if genClient.Code != 0 {
 		f.T.Fatalf("ssh-keygen client key failed:\n%s", genClient.Dump())
 	}
@@ -593,9 +367,11 @@ Host kube-ssh-e2e
 }
 
 func (f *Framework) waitTCP(host string, port int, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().
+		Add(timeout)
 	address := net.JoinHostPort(host, strconv.Itoa(port))
-	for time.Now().Before(deadline) {
+	for time.Now().
+		Before(deadline) {
 		conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
 		if err != nil {
 			time.Sleep(100 * time.Millisecond)
@@ -605,11 +381,6 @@ func (f *Framework) waitTCP(host string, port int, timeout time.Duration) {
 		return
 	}
 	f.T.Fatalf("timed out waiting for %s", address)
-}
-
-func (f *Framework) runCommand(timeout time.Duration, name string, args []string, stdin *strings.Reader, env map[string]string) Result {
-	f.T.Helper()
-	return runE2ECommand(timeout, name, args, stdin, env)
 }
 
 func runE2ECommand(timeout time.Duration, name string, args []string, stdin *strings.Reader, env map[string]string) Result {
@@ -630,23 +401,17 @@ func runE2ECommand(timeout time.Duration, name string, args []string, stdin *str
 		Code:   0,
 	}
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			result.Code = exitErr.ExitCode()
-		} else if ctx.Err() != nil {
+		} else if err := ctx.Err(); err != nil {
 			result.Code = -1
-			result.Stderr += "\n" + ctx.Err().Error()
+			result.Stderr += "\n" + err.Error()
 		} else {
 			result.Code = -1
 			result.Stderr += "\n" + err.Error()
 		}
 	}
 	return result
-}
-
-func (f *Framework) startCommand(name string, args []string, env map[string]string) *BackgroundCommand {
-	f.T.Helper()
-	return f.startCommandWithStdin(name, args, nil, env)
 }
 
 func (f *Framework) startCommandWithStdin(name string, args []string, stdin io.Reader, env map[string]string) *BackgroundCommand {
@@ -680,8 +445,9 @@ func (f *Framework) startCommandWithStdin(name string, args []string, stdin io.R
 	return bg
 }
 
+// Stop terminates the command and waits for its I/O to finish. It is idempotent.
 func (c *BackgroundCommand) Stop() {
-	if c == nil || c.cancel == nil {
+	if c.cancel == nil {
 		return
 	}
 	if c.Stdin != nil {
@@ -694,50 +460,6 @@ func (c *BackgroundCommand) Stop() {
 
 func (r Result) Dump() string {
 	return fmt.Sprintf("exit code: %d\nstdout:\n%s\nstderr:\n%s", r.Code, r.Stdout, r.Stderr)
-}
-
-func (f *Framework) RemotePath(name string) string {
-	return "/tmp/kube-ssh-e2e-" + f.TestID + "-" + name
-}
-
-func (f *Framework) HelperProcessCount(user string) int {
-	f.T.Helper()
-	result := f.SSH(user, helperProcessCountCommand())
-	if result.Code != 0 {
-		f.T.Fatalf("count helper processes failed:\n%s", result.Dump())
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(result.Stdout))
-	if err != nil {
-		f.T.Fatalf("parse helper process count from %q: %v\n%s", result.Stdout, err, result.Dump())
-	}
-	return count
-}
-
-func (f *Framework) HelperProcessSnapshot(user string) string {
-	f.T.Helper()
-	result := f.SSH(user, "for f in /proc/[0-9]*/cmdline; do cmd=$(tr '\\0' ' ' < \"$f\" 2>/dev/null); [ -n \"$cmd\" ] && echo \"$f $cmd\"; done")
-	if result.Code != 0 {
-		return result.Dump()
-	}
-	return result.Stdout
-}
-
-func (f *Framework) WaitHelperProcessCount(user string, want int, timeout time.Duration) {
-	f.T.Helper()
-	deadline := time.Now().Add(timeout)
-	var got int
-	for time.Now().Before(deadline) {
-		got = f.HelperProcessCount(user)
-		if got == want {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	f.T.Fatalf("helper process count = %d, want %d\nprocesses:\n%s", got, want, f.HelperProcessSnapshot(user))
-}
-
-func helperProcessCountCommand() string {
-	return "needle=kube-ssh; needle=\"${needle}-helper\"; count=0; for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < \"$f\" 2>/dev/null | grep -q \"$needle\" && count=$((count+1)); done; echo \"$count\""
 }
 
 func requireCommands(t *testing.T, names ...string) {
@@ -819,7 +541,7 @@ func runtimeGOARCH() string {
 }
 
 func containsLine(text, want string) bool {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if strings.TrimSpace(line) == want {
 			return true
 		}

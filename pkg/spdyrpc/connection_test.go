@@ -16,8 +16,7 @@ import (
 )
 
 func TestConnectionGoErrorStopsServe(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	leftTransport, rightTransport := net.Pipe()
 	defer leftTransport.Close()
 	defer rightTransport.Close()
@@ -174,8 +173,7 @@ func TestConnectionCancellationReleasesBlockedResponse(t *testing.T) {
 }
 
 func TestConnectionCallsInBothDirections(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	leftTransport, rightTransport := net.Pipe()
 	defer leftTransport.Close()
 	defer rightTransport.Close()

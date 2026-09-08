@@ -14,13 +14,15 @@ import (
 func TestWebhookAuthorizer(t *testing.T) {
 	var got WebhookAuthorizeRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		if err := json.NewDecoder(r.Body).
+			Decode(&got); err != nil {
 			t.Fatalf("Decode() error = %v", err)
 		}
-		_ = json.NewEncoder(w).Encode(WebhookAuthorizeResponse{
-			Decision: DecisionAllow,
-			Reason:   "ok",
-		})
+		_ = json.NewEncoder(w).
+			Encode(WebhookAuthorizeResponse{
+				Decision: DecisionAllow,
+				Reason:   "ok",
+			})
 	}))
 	defer server.Close()
 
@@ -48,7 +50,8 @@ func TestWebhookAuthorizer(t *testing.T) {
 
 func TestWebhookAuthorizerInvalidDecision(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(WebhookAuthorizeResponse{Decision: Decision("bad")})
+		_ = json.NewEncoder(w).
+			Encode(WebhookAuthorizeResponse{Decision: Decision("bad")})
 	}))
 	defer server.Close()
 

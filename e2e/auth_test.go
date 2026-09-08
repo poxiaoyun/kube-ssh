@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"strings"
 	"testing"
 
 	cryptossh "golang.org/x/crypto/ssh"
@@ -52,4 +55,17 @@ func TestPasswordAuthentication(t *testing.T) {
 	if output, err := f.SSHClientExec(user, cryptossh.Password("bad"), "echo rejected"); err == nil {
 		t.Fatalf("unexpected password auth success:\n%s", output)
 	}
+}
+
+func newTestSigner(t *testing.T) (cryptossh.Signer, string) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	signer, err := cryptossh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	return signer, strings.TrimSpace(string(cryptossh.MarshalAuthorizedKey(signer.PublicKey())))
 }

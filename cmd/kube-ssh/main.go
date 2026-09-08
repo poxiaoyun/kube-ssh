@@ -54,7 +54,7 @@ func newRootCmd() *cobra.Command {
 			opts.Authentication.Passwords = passwordEntries
 			logEffectiveConfig(cmd.Flags())
 
-			ctx, stop := signalContext()
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			if err := gateway.Run(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
 				return err
@@ -219,8 +219,4 @@ func newVersionCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func signalContext() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }

@@ -152,20 +152,18 @@ func sameCapabilities(actual, expected []string) bool {
 func (m *helperManager) copy(ctx context.Context, containerID, remotePath string, data []byte) error {
 	shellCommand := []string{"sh", "-c", `cat > "$1" && chmod +x "$1"`, "sh", remotePath}
 	code, shellErr := m.streamExec(ctx, containerID, shellCommand, bytes.NewReader(data), io.Discard, io.Discard)
-	if shellErr == nil && code == 0 {
-		return nil
+	if shellErr != nil || code != 0 {
+		archive, err := helperTarArchive(path.Base(remotePath), data)
+		if err != nil {
+			return fmt.Errorf("build helper archive: %w", err)
+		}
+		tarCommand := []string{"tar", "-xf", "-", "-C", path.Dir(remotePath)}
+		tarCode, tarErr := m.streamExec(ctx, containerID, tarCommand, bytes.NewReader(archive), io.Discard, io.Discard)
+		if tarErr != nil || tarCode != 0 {
+			return fmt.Errorf("inject helper failed: sh exit=%d err=%v; tar exit=%d err=%v", code, shellErr, tarCode, tarErr)
+		}
 	}
-
-	archive, err := helperTarArchive(path.Base(remotePath), data)
-	if err != nil {
-		return fmt.Errorf("build helper archive: %w", err)
-	}
-	tarCommand := []string{"tar", "-xf", "-", "-C", path.Dir(remotePath)}
-	tarCode, tarErr := m.streamExec(ctx, containerID, tarCommand, bytes.NewReader(archive), io.Discard, io.Discard)
-	if tarErr == nil && tarCode == 0 {
-		return nil
-	}
-	return fmt.Errorf("inject helper failed: sh exit=%d err=%v; tar exit=%d err=%v", code, shellErr, tarCode, tarErr)
+	return nil
 }
 
 func helperTarArchive(name string, data []byte) ([]byte, error) {
@@ -203,12 +201,11 @@ func (m *helperManager) streamExec(ctx context.Context, containerID string, comm
 	if err != nil {
 		return 1, err
 	}
-	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr})
-	var exitErr interface{ ExitStatus() int }
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitStatus(), nil
-	}
-	if err != nil {
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr}); err != nil {
+		var exitErr interface{ ExitStatus() int }
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitStatus(), nil
+		}
 		return 1, err
 	}
 	return 0, nil

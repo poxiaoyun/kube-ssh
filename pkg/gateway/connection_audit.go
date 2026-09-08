@@ -31,7 +31,12 @@ func (s *gateway) startConnectionAudit(ctx gossh.Context, conn net.Conn) func() 
 			result = "success"
 		}
 		end := s.connectionEvent(ctx, state, "connection.end")
-		end.Outcome = &audit.Outcome{Result: result, DurationMS: time.Since(state.started).Milliseconds()}
+		end.Outcome = &audit.Outcome{
+			Result: result,
+			DurationMS: time.
+				Since(state.started).
+				Milliseconds(),
+		}
 		s.audit.Record(ctx, end)
 	}
 }

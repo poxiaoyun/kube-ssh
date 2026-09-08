@@ -53,7 +53,8 @@ func TestKubernetesSARAuthorizerMapsCapabilities(t *testing.T) {
 				}, nil
 			})
 
-			decision, reason, err := NewKubernetesSARAuthorizer(client).Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(tt.capability, tt.extra)))
+			decision, reason, err := NewKubernetesSARAuthorizer(client).
+				Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(tt.capability, tt.extra)))
 			if err != nil {
 				t.Fatalf("Authorize() error = %v", err)
 			}
@@ -82,12 +83,13 @@ func TestKubernetesSARAuthorizerMapsCapabilities(t *testing.T) {
 
 func TestKubernetesSARAuthorizerNoOpinionForNonKubeTarget(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	decision, reason, err := NewKubernetesSARAuthorizer(client).Authorize(context.Background(), kubeSARRequest(testSARUser(), Attributes{
-		Action: string(CapabilityExec),
-		Resources: []AttributeResource{
-			{Resource: "targets", Name: "other"},
-		},
-	}))
+	decision, reason, err := NewKubernetesSARAuthorizer(client).
+		Authorize(context.Background(), kubeSARRequest(testSARUser(), Attributes{
+			Action: string(CapabilityExec),
+			Resources: []AttributeResource{
+				{Resource: "targets", Name: "other"},
+			},
+		}))
 	if err != nil {
 		t.Fatalf("Authorize() error = %v", err)
 	}
@@ -104,7 +106,8 @@ func TestKubernetesSARAuthorizerNoOpinionForNonKubeTarget(t *testing.T) {
 
 func TestKubernetesSARAuthorizerNoOpinionForUnknownCapability(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	decision, reason, err := NewKubernetesSARAuthorizer(client).Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(Capability("unknown"), nil)))
+	decision, reason, err := NewKubernetesSARAuthorizer(client).
+		Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(Capability("unknown"), nil)))
 	if err != nil {
 		t.Fatalf("Authorize() error = %v", err)
 	}
@@ -130,7 +133,8 @@ func TestKubernetesSARAuthorizerDenyReason(t *testing.T) {
 		}, nil
 	})
 
-	decision, reason, err := NewKubernetesSARAuthorizer(client).Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(CapabilityExec, nil)))
+	decision, reason, err := NewKubernetesSARAuthorizer(client).
+		Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(CapabilityExec, nil)))
 	if err != nil {
 		t.Fatalf("Authorize() error = %v", err)
 	}
@@ -149,14 +153,16 @@ func TestKubernetesSARAuthorizerReturnsCreateError(t *testing.T) {
 		return true, nil, wantErr
 	})
 
-	_, _, err := NewKubernetesSARAuthorizer(client).Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(CapabilityExec, nil)))
+	_, _, err := NewKubernetesSARAuthorizer(client).
+		Authorize(context.Background(), kubeSARRequest(testSARUser(), kubeSARAttrs(CapabilityExec, nil)))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Authorize() error = %v, want %v", err, wantErr)
 	}
 }
 
 func TestKubernetesSARAuthorizerRequiresUser(t *testing.T) {
-	decision, reason, err := NewKubernetesSARAuthorizer(fake.NewSimpleClientset()).Authorize(context.Background(), kubeSARRequest(authn.UserInfo{}, kubeSARAttrs(CapabilityExec, nil)))
+	decision, reason, err := NewKubernetesSARAuthorizer(fake.NewSimpleClientset()).
+		Authorize(context.Background(), kubeSARRequest(authn.UserInfo{}, kubeSARAttrs(CapabilityExec, nil)))
 	if err != nil {
 		t.Fatalf("Authorize() error = %v", err)
 	}

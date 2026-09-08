@@ -18,4 +18,4 @@ limitations under the License.
 
 package v1
 
-type AccessExpansion interface{}
+type AccessExpansion any

@@ -99,18 +99,15 @@ func (NopRecorder) Record(context.Context, Event) {}
 func NewEvent(eventType string) Event {
 	return Event{
 		SchemaVersion: SchemaVersion,
-		ID:            newID(),
-		Time:          time.Now().UTC(),
-		Type:          eventType,
+		ID:            NewID(),
+		Time: time.Now().
+			UTC(),
+		Type: eventType,
 	}
 }
 
-func NewID() string { return newID() }
-
-func newID() string {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return uuid.NewString()
-	}
-	return id.String()
+// NewID returns a UUIDv7 for correlating audit records.
+func NewID() string {
+	return uuid.Must(uuid.NewV7()).
+		String()
 }

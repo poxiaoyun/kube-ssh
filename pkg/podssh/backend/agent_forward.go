@@ -8,6 +8,7 @@ import (
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/podssh/backend/helper"
 )
 
+// AgentForward starts a target-local socket and owns its helper session until Close.
 func (b *Executor) AgentForward(ctx context.Context, req AgentForwardRequest) (AgentForward, error) {
 	session, err := b.startHelperSession(ctx, req.Target, helperpkg.CapabilityAgentForward)
 	if err != nil {

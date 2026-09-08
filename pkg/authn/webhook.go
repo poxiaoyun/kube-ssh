@@ -46,7 +46,7 @@ type WebhookPublicKeyCredential struct {
 
 type WebhookAuthenticateResponse struct {
 	Authenticated bool                `json:"authenticated"`
-	User          UserInfo            `json:"user,omitempty"`
+	User          UserInfo            `json:"user"`
 	Method        string              `json:"method,omitempty"`
 	TargetHints   []WebhookTargetHint `json:"targetHints,omitempty"`
 	Reason        string              `json:"reason,omitempty"`

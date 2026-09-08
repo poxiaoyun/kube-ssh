@@ -110,10 +110,11 @@ func (p *Protocol) serveRemoteForward(
 	for {
 		stream, info, err := forward.Accept(p.ctx)
 		if err != nil {
-			if p.ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-				result.Err = err
-				slog.ErrorContext(p.ctx, "remote forward accept failed", "err", err)
+			if p.ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return
 			}
+			result.Err = err
+			slog.ErrorContext(p.ctx, "remote forward accept failed", "err", err)
 			return
 		}
 		go p.proxyRemoteForwardConnection(conn, stream, info, bindHost, bindPort)

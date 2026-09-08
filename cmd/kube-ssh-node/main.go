@@ -34,7 +34,9 @@ func newCommand() *cobra.Command {
 		RuntimeTimeout:     10 * time.Second,
 	}
 	command := &cobra.Command{
-		Use: "kube-ssh-node", Short: "Node-local CRI streaming data plane for kube-ssh", Version: version.Get().
+		Use:   "kube-ssh-node",
+		Short: "Node-local CRI streaming data plane for kube-ssh",
+		Version: version.Get().
 			String(),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

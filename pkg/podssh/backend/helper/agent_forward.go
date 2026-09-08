@@ -263,10 +263,13 @@ func (c *agentForwardClient) close() {
 	}
 }
 
+// SocketPath returns the target-side Unix socket for SSH_AUTH_SOCK.
 func (f *AgentListener) SocketPath() string {
 	return f.socketPath
 }
 
+// Accept waits for the next agent connection, listener closure, or cancellation.
+// The caller owns the returned stream.
 func (f *AgentListener) Accept(ctx context.Context) (ioproxy.HalfCloser, error) {
 	stopWakeup := context.AfterFunc(ctx, func() {
 		f.mu.Lock()
@@ -302,6 +305,8 @@ func (f *AgentListener) Accept(ctx context.Context) (ioproxy.HalfCloser, error) 
 	}
 }
 
+// Cancel stops the agent socket and pending accepts without closing accepted streams.
+// It is idempotent; closing the Client also releases the listener.
 func (f *AgentListener) Cancel(ctx context.Context) error {
 	f.cancelOnce.Do(func() {
 		f.client.removeIfMatch(f)

@@ -32,3 +32,18 @@ func TestShell(t *testing.T) {
 		t.Fatalf("shell stdout missing marker:\n%s", result.Dump())
 	}
 }
+
+func TestAuthorizationDeniesSessionOperations(t *testing.T) {
+	f := NewFrameworkWithOptions(t, FrameworkOptions{
+		GatewayArgs: []string{
+			"--authentication-anonymous",
+			"--policy-limit-capability", "shell",
+		},
+	})
+	user := f.Namespace + ".shell.app"
+
+	execResult := f.SSH(user, "echo denied")
+	if execResult.Code == 0 {
+		t.Fatalf("exec unexpectedly allowed:\n%s", execResult.Dump())
+	}
+}

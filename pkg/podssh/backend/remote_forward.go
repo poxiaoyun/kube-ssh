@@ -9,6 +9,7 @@ import (
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/podssh/backend/helper"
 )
 
+// RemoteForward starts a target-side listener and owns its helper session until Close.
 func (b *Executor) RemoteForward(ctx context.Context, req RemoteForwardRequest) (RemoteForward, error) {
 	if req.BindPort > 65535 {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("invalid bind port %d", req.BindPort))

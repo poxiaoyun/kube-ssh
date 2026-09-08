@@ -15,6 +15,7 @@ import (
 )
 
 type agentForwardSession interface {
+	// AgentForward returns the session's active agent forward, or nil if disabled.
 	AgentForward() backend.AgentForward
 }
 
@@ -59,10 +60,11 @@ func (p *Protocol) serveAgentForward(conn cryptossh.Conn, state *sessionAgentFor
 	for {
 		stream, err := state.forward.Accept(p.ctx)
 		if err != nil {
-			if !state.closing.Load() && p.ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-				result.Err = err
-				slog.ErrorContext(p.ctx, "agent forwarding accept failed", "err", err)
+			if state.closing.Load() || p.ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return
 			}
+			result.Err = err
+			slog.ErrorContext(p.ctx, "agent forwarding accept failed", "err", err)
 			return
 		}
 		go p.proxyAgentForwardConnection(conn, stream)

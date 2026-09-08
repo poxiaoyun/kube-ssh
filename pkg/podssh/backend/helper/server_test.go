@@ -147,8 +147,7 @@ func readForwardedToEOF(t *testing.T, ctx context.Context, reader io.Reader, wan
 }
 
 func TestServeConnectionForwardingServices(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client, done := startServerClient(t, ctx)
 	defer client.Close()
 

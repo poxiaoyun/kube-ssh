@@ -36,6 +36,7 @@ type RawMessage = json.RawMessage
 // HandlerFunc adapts a function to Handler.
 type HandlerFunc func(context.Context, RawMessage) (any, error)
 
+// Handle delegates the RPC method payload to f.
 func (f HandlerFunc) Handle(ctx context.Context, payload RawMessage) (any, error) {
 	return f(ctx, payload)
 }

@@ -16,22 +16,24 @@ import (
 func TestWebhookAuthenticatorPassword(t *testing.T) {
 	var got WebhookAuthenticateRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		if err := json.NewDecoder(r.Body).
+			Decode(&got); err != nil {
 			t.Fatalf("Decode() error = %v", err)
 		}
-		_ = json.NewEncoder(w).Encode(WebhookAuthenticateResponse{
-			Authenticated: true,
-			User:          UserInfo{Name: "alice@example.com", Groups: []string{"dev"}},
-			Method:        "webhook-password",
-			TargetHints: []WebhookTargetHint{{
-				Kind: "kube",
-				Options: []WebhookTargetHintOption{
-					{Key: "namespaces", Value: "default"},
-					{Key: "pods", Value: "nginx"},
-				},
-				Extra: map[string][]string{"aliases": {"dev-nginx"}},
-			}},
-		})
+		_ = json.NewEncoder(w).
+			Encode(WebhookAuthenticateResponse{
+				Authenticated: true,
+				User:          UserInfo{Name: "alice@example.com", Groups: []string{"dev"}},
+				Method:        "webhook-password",
+				TargetHints: []WebhookTargetHint{{
+					Kind: "kube",
+					Options: []WebhookTargetHintOption{
+						{Key: "namespaces", Value: "default"},
+						{Key: "pods", Value: "nginx"},
+					},
+					Extra: map[string][]string{"aliases": {"dev-nginx"}},
+				}},
+			})
 	}))
 	defer server.Close()
 
@@ -60,13 +62,15 @@ func TestWebhookAuthenticatorPassword(t *testing.T) {
 func TestWebhookAuthenticatorPublicKey(t *testing.T) {
 	var got WebhookAuthenticateRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		if err := json.NewDecoder(r.Body).
+			Decode(&got); err != nil {
 			t.Fatalf("Decode() error = %v", err)
 		}
-		_ = json.NewEncoder(w).Encode(WebhookAuthenticateResponse{
-			Authenticated: true,
-			User:          UserInfo{Name: "alice@example.com"},
-		})
+		_ = json.NewEncoder(w).
+			Encode(WebhookAuthenticateResponse{
+				Authenticated: true,
+				User:          UserInfo{Name: "alice@example.com"},
+			})
 	}))
 	defer server.Close()
 
@@ -102,7 +106,8 @@ func TestWebhookAuthenticatorPublicKey(t *testing.T) {
 
 func TestWebhookAuthenticatorRejects(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(WebhookAuthenticateResponse{Reason: "bad credential"})
+		_ = json.NewEncoder(w).
+			Encode(WebhookAuthenticateResponse{Reason: "bad credential"})
 	}))
 	defer server.Close()
 

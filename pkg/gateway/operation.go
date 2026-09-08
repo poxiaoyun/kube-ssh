@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -69,9 +70,7 @@ func (s *gateway) newOperationContext(ctx gossh.Context) (*operationContext, err
 
 func (s *gateway) authorizeOperation(sc *operationContext, spec operationSpec) (string, bool) {
 	sc.audit.Fields["capability"] = string(spec.capability)
-	for key, value := range spec.auditFields {
-		sc.audit.Fields[key] = value
-	}
+	maps.Copy(sc.audit.Fields, spec.auditFields)
 
 	decision, reason, err := s.authz.Authorize(sc.ctx, authz.Request{
 		User:       sc.info.User,
@@ -133,9 +132,7 @@ func (s *gateway) operationEvent(sc *operationContext, spec operationSpec, event
 	event.Target = auditTarget(sc.target)
 	event.Operation = &audit.Operation{Name: spec.name, Capability: string(spec.capability), Command: spec.auditFields["command"]}
 	event.Fields = make(map[string]string, len(spec.auditFields))
-	for key, value := range spec.auditFields {
-		event.Fields[key] = value
-	}
+	maps.Copy(event.Fields, spec.auditFields)
 	for key, value := range sc.audit.Fields {
 		switch key {
 		case "capability", "decision", "reason", "error", "exit_code":

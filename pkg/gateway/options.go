@@ -103,6 +103,7 @@ type AuditOptions struct {
 	FlushTimeout time.Duration
 }
 
+// NewDefaultOptions returns the gateway's built-in configuration defaults.
 func NewDefaultOptions() *Options {
 	return &Options{
 		ListenAddress: ":2222",

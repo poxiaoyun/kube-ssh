@@ -59,20 +59,23 @@ func (a *KubernetesSARAuthorizer) Authorize(ctx context.Context, req Request) (D
 		return DecisionDeny, "kubernetes user is required", nil
 	}
 
-	sar, err := a.client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
-		Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:   user.Name,
-			Groups: user.Groups,
-			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Namespace:   namespace,
-				Verb:        kubernetesVerbCreate,
-				Group:       "",
-				Resource:    kubernetesResourcePods,
-				Subresource: subresource,
-				Name:        pod,
+	sar, err := a.client.
+		AuthorizationV1().
+		SubjectAccessReviews().
+		Create(ctx, &authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{
+				User:   user.Name,
+				Groups: user.Groups,
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace:   namespace,
+					Verb:        kubernetesVerbCreate,
+					Group:       "",
+					Resource:    kubernetesResourcePods,
+					Subresource: subresource,
+					Name:        pod,
+				},
 			},
-		},
-	}, metav1.CreateOptions{})
+		}, metav1.CreateOptions{})
 	if err != nil {
 		return DecisionNoOpinion, "", err
 	}

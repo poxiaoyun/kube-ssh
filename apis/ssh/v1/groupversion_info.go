@@ -15,7 +15,8 @@ var (
 )
 
 func Resource(resource string) schema.GroupResource {
-	return SchemeGroupVersion.WithResource(resource).GroupResource()
+	return SchemeGroupVersion.WithResource(resource).
+		GroupResource()
 }
 
 func addKnownTypes(scheme *runtime.Scheme) error {

@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"slices"
 )
 
 // AllowAll is an Authorizer that permits every request.
@@ -32,15 +33,11 @@ type StaticCapabilities struct {
 
 func (a StaticCapabilities) Authorize(_ context.Context, req Request) (Decision, string, error) {
 	capability := Capability(req.Attributes.Action)
-	for _, denied := range a.Deny {
-		if capability == denied {
-			return DecisionDeny, "capability denied", nil
-		}
+	if slices.Contains(a.Deny, capability) {
+		return DecisionDeny, "capability denied", nil
 	}
-	for _, allowed := range a.Allow {
-		if capability == allowed {
-			return DecisionNoOpinion, "", nil
-		}
+	if slices.Contains(a.Allow, capability) {
+		return DecisionNoOpinion, "", nil
 	}
 	if len(a.Allow) == 0 {
 		return DecisionNoOpinion, "", nil

@@ -53,6 +53,9 @@ type Dependencies struct {
 	Metrics       metrics.Recorder
 }
 
+// Validate checks the collaborators required to authenticate, resolve, authorize,
+// and audit connections. Start, Stop, Metrics, and target-specific adapters are
+// optional; an adapter is needed only when its target kind is selected.
 func (d Dependencies) Validate() error {
 	if d.Authenticator == nil {
 		return fmt.Errorf("authenticator is required")
@@ -80,7 +83,7 @@ func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error)
 	if err != nil {
 		return Dependencies{}, fmt.Errorf("load kubernetes config: %w", err)
 	}
-	kubeClient, err := newKubernetesClient(restConfig)
+	kubeClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return Dependencies{}, fmt.Errorf("create kubernetes client: %w", err)
 	}
@@ -222,14 +225,10 @@ func buildAuthenticator(opts *Options, accessAuthenticator authn.SSHAuthenticato
 	return authn.NewChain(authenticators...), nil
 }
 
-func buildResolver(accessResolver target.Resolver, directResolvers ...target.Resolver) target.Resolver {
+func buildResolver(accessResolver, directResolver target.Resolver) target.Resolver {
 	resolvers := target.Chain{}
 	if accessResolver != nil {
 		resolvers = append(resolvers, accessResolver)
-	}
-	directResolver := target.Resolver(podtarget.NewUsernameResolver())
-	if len(directResolvers) > 0 && directResolvers[0] != nil {
-		directResolver = directResolvers[0]
 	}
 	resolvers = append(resolvers, directResolver, target.HintResolver{})
 	return resolvers

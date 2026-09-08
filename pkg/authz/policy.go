@@ -30,12 +30,12 @@ func (p PolicyLimits) Authorize(_ context.Context, req Request) (Decision, strin
 	switch capability {
 	case CapabilityLocalForward:
 		destination := net.JoinHostPort(extraValue(req.Attributes.Extra, "destination_host"), extraValue(req.Attributes.Extra, "destination_port"))
-		if !expressionAllowed(p.LocalForwardDestinations, destination) {
+		if !wildcard.MatchAny(p.LocalForwardDestinations, destination) {
 			return DecisionDeny, "local forward destination exceeds global policy limits", nil
 		}
 	case CapabilityRemoteForward:
 		bind := net.JoinHostPort(extraValue(req.Attributes.Extra, "bind_host"), extraValue(req.Attributes.Extra, "bind_port"))
-		if !expressionAllowed(p.RemoteForwardBinds, bind) {
+		if !wildcard.MatchAny(p.RemoteForwardBinds, bind) {
 			return DecisionDeny, "remote forward bind exceeds global policy limits", nil
 		}
 	}
@@ -44,8 +44,4 @@ func (p PolicyLimits) Authorize(_ context.Context, req Request) (Decision, strin
 
 func containsOrWildcard(values []Capability, value Capability) bool {
 	return slices.Contains(values, Capability("*")) || slices.Contains(values, value)
-}
-
-func expressionAllowed(patterns []string, value string) bool {
-	return wildcard.MatchAny(patterns, value)
 }

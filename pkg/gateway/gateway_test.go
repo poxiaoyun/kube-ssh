@@ -358,8 +358,7 @@ func BenchmarkSSHHandshake(b *testing.B) {
 		b.Run(benchmark.name, func(b *testing.B) {
 			addr, config := startBenchmarkSSHServer(b, benchmark.hostKeyFile(b))
 			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
+			for b.Loop() {
 				client, err := cryptossh.Dial("tcp", addr, config)
 				if err != nil {
 					b.Fatalf("SSH dial: %v", err)
@@ -381,8 +380,7 @@ func BenchmarkSSHExec(b *testing.B) {
 	b.Cleanup(func() { _ = client.Close() })
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		session, err := client.NewSession()
 		if err != nil {
 			b.Fatalf("new SSH session: %v", err)
@@ -409,8 +407,7 @@ func BenchmarkSSHDirectTCPIPThroughput(b *testing.B) {
 
 	b.SetBytes(int64(len(payload)))
 	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		if _, err := stream.Write(payload); err != nil {
 			b.Fatalf("write direct-tcpip stream: %v", err)
 		}

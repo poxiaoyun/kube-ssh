@@ -118,19 +118,16 @@ func prepare(event *Event) {
 		event.SchemaVersion = SchemaVersion
 	}
 	if event.ID == "" {
-		event.ID = newID()
+		event.ID = NewID()
 	}
 	if event.Time.IsZero() {
-		event.Time = timeNow()
+		event.Time = time.Now().
+			UTC()
 	}
 }
 
-var timeNow = func() time.Time { return time.Now().UTC() }
-
 func cloneEvent(event Event) Event {
-	if event.Fields != nil {
-		event.Fields = maps.Clone(event.Fields)
-	}
+	event.Fields = maps.Clone(event.Fields)
 	if event.Actor != nil {
 		actor := *event.Actor
 		actor.Groups = slices.Clone(actor.Groups)

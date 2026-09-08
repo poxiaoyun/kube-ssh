@@ -93,7 +93,8 @@ spec:
                         allow:
                           description: |-
                             Allow is the list of SSH capabilities allowed for this credential. Omitted
-                            or empty means all capabilities are allowed by this access object.
+                            or empty inherits the gateway defaults, which exclude ssh_extension unless
+                            it is explicitly enabled.
                           items:
                             description: Capability is an SSH operation type.
                             enum:
@@ -122,7 +123,7 @@ spec:
 
                                 An asterisk matches any sequence of characters; "*" allows every value.
 
-                                Empty means any destination accepted by the selected target is allowed.
+                                Omitted or empty inherits the gateway's allowed destinations.
                               items:
                                 type: string
                               type: array
@@ -142,7 +143,7 @@ spec:
 
                                 An asterisk matches any sequence of characters; "*" allows every value.
 
-                                Empty means any bind accepted by the selected target is allowed.
+                                Omitted or empty inherits the gateway's allowed binds.
                               items:
                                 type: string
                               type: array
@@ -465,7 +466,7 @@ spec:
                     description: |-
                       IdleTimeout is the maximum idle period for SSH connections using this
                       Access. Client keepalives and SSH traffic may count as activity. This
-                      field can only narrow the server-wide idle timeout.
+                      field is bounded by the gateway's idle-timeout limit.
                     format: duration
                     type: string
                   maxDuration:
@@ -473,7 +474,7 @@ spec:
                       MaxDuration is the maximum lifetime for SSH connections using this Access.
                       When exceeded, kube-ssh closes the whole SSH connection, including shell,
                       exec, sftp, local-forward, and remote-forward channels. This field can
-                      only narrow the server-wide max duration.
+                      not exceed the gateway's maximum-duration limit.
                     format: duration
                     type: string
                 type: object

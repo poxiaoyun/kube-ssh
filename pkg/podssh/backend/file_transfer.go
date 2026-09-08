@@ -8,10 +8,12 @@ import (
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/podssh/backend/helper"
 )
 
+// SFTP serves a file-transfer session through the target-side helper.
 func (b *Executor) SFTP(ctx context.Context, req StreamRequest) (int, error) {
 	return b.execHelperCommand(ctx, helperpkg.CapabilitySFTP, []string{helperpkg.CapabilitySFTP}, req)
 }
 
+// SCP serves a legacy SCP session through the target-side helper.
 func (b *Executor) SCP(ctx context.Context, req SCPRequest) (int, error) {
 	command := append([]string{helperpkg.CapabilitySCP}, req.Args...)
 	return b.execHelperCommand(ctx, helperpkg.CapabilitySCP, command, req.StreamRequest)

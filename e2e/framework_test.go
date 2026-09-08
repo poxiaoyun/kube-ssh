@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,4 +65,10 @@ func TestMissingHelperFailsClearly(t *testing.T) {
 	if !strings.Contains(output, "read helper binary") || !strings.Contains(output, missingHelper) {
 		t.Fatalf("sftp error missing helper read context and path:\n%s", sftp.Dump())
 	}
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	cleanupE2ESuite()
+	os.Exit(code)
 }

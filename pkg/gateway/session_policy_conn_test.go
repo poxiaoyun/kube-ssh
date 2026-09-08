@@ -135,8 +135,7 @@ func BenchmarkSessionPolicyConnTouch(b *testing.B) {
 	conn := newSessionPolicyConn(benchmarkConn{}, effectiveSessionPolicy{IdleTimeout: time.Minute})
 	defer conn.Close()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		conn.touch()
 	}
 }

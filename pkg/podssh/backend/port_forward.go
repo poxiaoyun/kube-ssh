@@ -12,6 +12,8 @@ import (
 	helperpkg "xiaoshiai.cn/kube-ssh/pkg/podssh/backend/helper"
 )
 
+// PortForward uses Pod port-forwarding for loopback hosts and helper dialing otherwise.
+// The caller owns the returned stream.
 func (b *Executor) PortForward(ctx context.Context, req PortForwardRequest) (ioproxy.HalfCloser, error) {
 	if req.Port == 0 || req.Port > 65535 {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("invalid port %d", req.Port))

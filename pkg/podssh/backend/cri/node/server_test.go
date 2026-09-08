@@ -2,7 +2,6 @@ package node
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -35,9 +34,7 @@ func TestLoadServerTLSReloadsServingCertificateAndClientCA(t *testing.T) {
 	beforeCertificate := before.Certificates[0].Certificate[0]
 	beforeCAs := before.ClientCAs
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runtime.Run(ctx)
+	go runtime.Run(t.Context())
 	writeTLSFiles(t, caFile, certFile, keyFile, 2)
 
 	after := waitForTLSReload(t, tlsConfig, beforeCertificate, beforeCAs)

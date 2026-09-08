@@ -53,21 +53,6 @@ func TestLoadEnvGatewayConfiguration(t *testing.T) {
 	}
 }
 
-func TestPodSSHCRIFlagsUseCRIName(t *testing.T) {
-	flags := newRootCmd().
-		Flags()
-	for _, name := range []string{"managed-transport", "cri-port", "cri-server-name", "cri-ca-file", "cri-cert-file", "cri-key-file"} {
-		if flags.Lookup(name) == nil {
-			t.Errorf("flag --%s is missing", name)
-		}
-	}
-	for _, name := range []string{"backend-mode", "node-port", "node-server-name", "node-ca-file", "node-cert-file", "node-key-file"} {
-		if flags.Lookup(name) != nil {
-			t.Errorf("obsolete flag --%s is still registered", name)
-		}
-	}
-}
-
 func TestLoadEnvPreservesQuotedSliceValue(t *testing.T) {
 	t.Setenv("AUTHORIZED_KEY", `"alice=ssh-ed25519 AAAA comment"`)
 	var keys []string

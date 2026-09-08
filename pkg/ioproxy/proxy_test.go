@@ -10,8 +10,7 @@ import (
 )
 
 func TestProxyCopiesBothDirectionsAndHalfCloses(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	a := newTestHalfCloser()
 	b := newTestHalfCloser()
@@ -41,8 +40,7 @@ func TestProxyCopiesBothDirectionsAndHalfCloses(t *testing.T) {
 }
 
 func TestProxyWithObserverRecordsLifecycleAndBytes(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	a := newTestHalfCloser()
 	b := newTestHalfCloser()
@@ -119,8 +117,7 @@ func (o *testStreamObserver) StreamBytes(_, direction string, n int64) {
 
 func TestProxyReturnsCopyError(t *testing.T) {
 	wantErr := errors.New("write failed")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	a := newReadOnlyHalfCloser("payload")
 	b := errWriteHalfCloser{err: wantErr}

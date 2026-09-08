@@ -61,10 +61,6 @@ func (b *Transport) Exec(ctx context.Context, req backend.ExecRequest) (int, err
 	return 0, nil
 }
 
-func (b *Transport) exec(ctx context.Context, req backend.ExecRequest) (int, error) {
-	return b.Exec(ctx, req)
-}
-
 type terminalSizeQueue struct {
 	queue backend.TerminalSizeQueue
 }

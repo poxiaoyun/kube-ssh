@@ -201,7 +201,7 @@ func (a *copyHelperAcquirer) copyMethods() []helperCopyMethod {
 }
 
 func (a *copyHelperAcquirer) copyHelperBinaryWithShell(ctx context.Context, tgt *target.Target, remotePath string, data []byte) error {
-	exitCode, err := a.backend.exec(ctx, backend.ExecRequest{
+	exitCode, err := a.backend.Exec(ctx, backend.ExecRequest{
 		Target: tgt,
 		Command: []string{
 			"sh",
@@ -229,7 +229,7 @@ func (a *copyHelperAcquirer) copyHelperBinaryWithTar(ctx context.Context, tgt *t
 	if err != nil {
 		return err
 	}
-	exitCode, err := a.backend.exec(ctx, backend.ExecRequest{
+	exitCode, err := a.backend.Exec(ctx, backend.ExecRequest{
 		Target: tgt,
 		Command: []string{
 			"tar",
@@ -274,7 +274,7 @@ func helperTarArchive(name string, data []byte) ([]byte, error) {
 func (a *copyHelperAcquirer) probeVersion(ctx context.Context, tgt *target.Target, remotePath string) (helperpkg.Manifest, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	exitCode, err := a.backend.exec(ctx, backend.ExecRequest{
+	exitCode, err := a.backend.Exec(ctx, backend.ExecRequest{
 		Target:  tgt,
 		Command: []string{remotePath, helperpkg.CommandVersion},
 		Stdout:  &stdout,

@@ -94,3 +94,29 @@ func TestSFTPBatch(t *testing.T) {
 	}
 	assertFileContent(t, downloaded, content)
 }
+
+func TestAuthorizationDeniesFileTransfer(t *testing.T) {
+	f := NewFrameworkWithOptions(t, FrameworkOptions{
+		GatewayArgs: []string{
+			"--authentication-anonymous",
+			"--policy-limit-capability", "shell",
+		},
+	})
+	user := f.Namespace + ".shell.app"
+
+	sftpResult := f.SFTPBatch(user, "ls /tmp\n")
+	if sftpResult.Code == 0 {
+		t.Fatalf("sftp unexpectedly allowed:\n%s", sftpResult.Dump())
+	}
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(data) != want {
+		t.Fatalf("%s content = %q, want %q", path, string(data), want)
+	}
+}

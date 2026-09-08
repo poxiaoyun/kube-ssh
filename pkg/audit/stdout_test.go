@@ -10,7 +10,7 @@ func BenchmarkStdoutSink(b *testing.B) {
 	sink := NewStdoutSink(io.Discard)
 	event := benchmarkEvent()
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		if err := sink.Write(context.Background(), event); err != nil {
 			b.Fatal(err)
 		}

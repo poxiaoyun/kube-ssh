@@ -28,6 +28,7 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
+// Options configures the node endpoint and gateway-to-node mutual TLS.
 type Options struct {
 	Port       int
 	ServerName string

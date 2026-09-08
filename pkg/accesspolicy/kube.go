@@ -23,9 +23,13 @@ func (l *KubernetesPodLister) List(ctx context.Context, namespace string, select
 	if l == nil || l.client == nil {
 		return nil, fmt.Errorf("pod lister requires a kubernetes client")
 	}
-	pods, err := l.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labels.SelectorFromSet(selector).String(),
-	})
+	pods, err := l.client.
+		CoreV1().
+		Pods(namespace).
+		List(ctx, metav1.ListOptions{
+			LabelSelector: labels.SelectorFromSet(selector).
+				String(),
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +40,10 @@ func (l *KubernetesPodLister) Get(ctx context.Context, namespace, name string) (
 	if l == nil || l.client == nil {
 		return nil, fmt.Errorf("pod getter requires a kubernetes client")
 	}
-	return l.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	return l.client.
+		CoreV1().
+		Pods(namespace).
+		Get(ctx, name, metav1.GetOptions{})
 }
 
 type InformerPodLister struct {

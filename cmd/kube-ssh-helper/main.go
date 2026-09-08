@@ -28,11 +28,11 @@ func main() {
 	case helper.CommandDial:
 		err = runDial(ctx, os.Args[2:])
 	case helper.CommandServe:
-		err = serveConnection(ctx)
+		err = helper.ServeConnection(ctx, os.Stdin, os.Stdout)
 	case helper.CommandSFTP:
-		err = runSFTP(ctx)
+		err = helper.RunSFTP(ctx, os.Stdin, os.Stdout)
 	case helper.CommandSCP:
-		err = runSCP(ctx, os.Args[2:])
+		err = helper.RunSCP(ctx, os.Args[2:], os.Stdin, os.Stdout)
 	default:
 		err = fmt.Errorf("unsupported helper command: %s", command)
 	}
@@ -45,18 +45,6 @@ func main() {
 func runVersion() error {
 	return json.NewEncoder(os.Stdout).
 		Encode(helper.CurrentManifest())
-}
-
-func runSFTP(ctx context.Context) error {
-	return helper.RunSFTP(ctx, os.Stdin, os.Stdout)
-}
-
-func runSCP(ctx context.Context, args []string) error {
-	return helper.RunSCP(ctx, args, os.Stdin, os.Stdout)
-}
-
-func serveConnection(ctx context.Context) error {
-	return helper.ServeConnection(ctx, os.Stdin, os.Stdout)
 }
 
 func runDial(ctx context.Context, args []string) error {

@@ -15,6 +15,8 @@ import (
 // the helper connection has closed.
 var ErrClientClosed = spdyrpc.ErrConnectionClosed
 
+// Client owns a helper connection and its remote and agent listeners.
+// Construct it with NewClient so listeners share the connection's lifetime.
 type Client struct {
 	conn *spdyrpc.Connection
 
@@ -53,10 +55,13 @@ func NewClient(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) 
 	return client, nil
 }
 
+// ListenRemote opens a target-side TCP listener; port zero requests an available port.
 func (c *Client) ListenRemote(ctx context.Context, host string, port uint32) (*RemoteListener, error) {
 	return c.remoteForward.Listen(ctx, host, port)
 }
 
+// ListenAgent opens the connection's target-side agent socket.
+// A connection may have only one active agent listener.
 func (c *Client) ListenAgent(ctx context.Context) (*AgentListener, error) {
 	return c.agentForward.Listen(ctx)
 }
@@ -77,6 +82,7 @@ func (c *Client) call(ctx context.Context, method string, in any, out any) error
 	return nil
 }
 
+// Close releases the connection, its listeners, and pending accepts. It is idempotent.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)

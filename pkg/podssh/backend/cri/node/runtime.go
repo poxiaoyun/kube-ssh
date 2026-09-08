@@ -12,13 +12,22 @@ import (
 // runtimeClient is the subset of CRI v1 used by the node data plane. Keeping this
 // interface local makes target resolution and streaming independently testable.
 type runtimeClient interface {
-	Version(context.Context, *runtimeapi.VersionRequest, ...grpc.CallOption) (*runtimeapi.VersionResponse, error)
-	Status(context.Context, *runtimeapi.StatusRequest, ...grpc.CallOption) (*runtimeapi.StatusResponse, error)
-	ListPodSandbox(context.Context, *runtimeapi.ListPodSandboxRequest, ...grpc.CallOption) (*runtimeapi.ListPodSandboxResponse, error)
-	ListContainers(context.Context, *runtimeapi.ListContainersRequest, ...grpc.CallOption) (*runtimeapi.ListContainersResponse, error)
-	Exec(context.Context, *runtimeapi.ExecRequest, ...grpc.CallOption) (*runtimeapi.ExecResponse, error)
-	ExecSync(context.Context, *runtimeapi.ExecSyncRequest, ...grpc.CallOption) (*runtimeapi.ExecSyncResponse, error)
-	PortForward(context.Context, *runtimeapi.PortForwardRequest, ...grpc.CallOption) (*runtimeapi.PortForwardResponse, error)
+	// Version reports the runtime and supported CRI API versions.
+	Version(ctx context.Context, request *runtimeapi.VersionRequest, options ...grpc.CallOption) (*runtimeapi.VersionResponse, error)
+	// Status reports runtime and network readiness.
+	Status(ctx context.Context, request *runtimeapi.StatusRequest, options ...grpc.CallOption) (*runtimeapi.StatusResponse, error)
+
+	// ListPodSandbox returns sandboxes matching the requested filter.
+	ListPodSandbox(ctx context.Context, request *runtimeapi.ListPodSandboxRequest, options ...grpc.CallOption) (*runtimeapi.ListPodSandboxResponse, error)
+	// ListContainers returns containers matching the requested filter.
+	ListContainers(ctx context.Context, request *runtimeapi.ListContainersRequest, options ...grpc.CallOption) (*runtimeapi.ListContainersResponse, error)
+
+	// Exec prepares the streaming URL for executing a container command.
+	Exec(ctx context.Context, request *runtimeapi.ExecRequest, options ...grpc.CallOption) (*runtimeapi.ExecResponse, error)
+	// ExecSync runs a container command and returns its output and exit code.
+	ExecSync(ctx context.Context, request *runtimeapi.ExecSyncRequest, options ...grpc.CallOption) (*runtimeapi.ExecSyncResponse, error)
+	// PortForward prepares the streaming URL for ports in a Pod sandbox.
+	PortForward(ctx context.Context, request *runtimeapi.PortForwardRequest, options ...grpc.CallOption) (*runtimeapi.PortForwardResponse, error)
 }
 
 type podIdentity struct {

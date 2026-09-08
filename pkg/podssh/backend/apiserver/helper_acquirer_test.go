@@ -396,10 +396,8 @@ func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
 	paths := make(chan string, workers)
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			handle, err := b.acquireHelper(context.Background(), tgt, helperpkg.CapabilitySFTP)
 			if err != nil {
 				errs <- err
@@ -411,7 +409,7 @@ func TestAcquireHelperConcurrentSameTargetCopiesOnce(t *testing.T) {
 				return
 			}
 			paths <- got[0]
-		}()
+		})
 	}
 
 	<-copyStarted

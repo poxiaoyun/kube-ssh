@@ -28,6 +28,7 @@ type helperLease interface {
 
 // helperAcquirer acquires a kube-ssh-helper lease for the target container.
 type helperAcquirer interface {
+	// Acquire prepares a compatible helper and returns its ready-to-run lease.
 	Acquire(ctx context.Context, tgt *target.Target, capability string) (helperLease, error)
 }
 
@@ -59,7 +60,7 @@ func (b *Transport) ExecHelper(ctx context.Context, req backend.HelperExecReques
 	}
 	defer func() { _ = helper.Release(context.WithoutCancel(ctx)) }()
 
-	return b.exec(ctx, backend.ExecRequest{
+	return b.Exec(ctx, backend.ExecRequest{
 		Target:  req.Target,
 		Command: helper.Command(req.Command...),
 		Stdin:   req.Stdin,
@@ -102,12 +103,8 @@ func validateHelperManifest(manifest, expected helperpkg.Manifest, capability st
 	if manifest.ProtocolVersion != helperpkg.ProtocolVersion {
 		return apierrors.NewServiceUnavailable(fmt.Sprintf("helper protocol %q is not supported; want %q", manifest.ProtocolVersion, helperpkg.ProtocolVersion))
 	}
-	if capability != "" && !manifestHasCapability(manifest, capability) {
+	if capability != "" && !slices.Contains(manifest.Capabilities, capability) {
 		return apierrors.NewServiceUnavailable(fmt.Sprintf("helper does not advertise required capability %q", capability))
 	}
 	return nil
-}
-
-func manifestHasCapability(manifest helperpkg.Manifest, capability string) bool {
-	return slices.Contains(manifest.Capabilities, capability)
 }

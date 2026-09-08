@@ -17,6 +17,7 @@ const (
 	operationSCP           = "scp"
 )
 
+// WithMetrics records each completed backend operation; a nil recorder disables recording.
 func WithMetrics(next Backend, recorder metrics.BackendRecorder) Backend {
 	if recorder == nil {
 		recorder = metrics.NopRecorder{}

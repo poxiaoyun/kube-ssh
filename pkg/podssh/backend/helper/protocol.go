@@ -24,6 +24,7 @@ const (
 	CapabilitySCP           = "scp"
 )
 
+// Manifest is the helper version command's wire representation.
 type Manifest struct {
 	Version         string   `json:"version"`
 	Commit          string   `json:"commit"`
@@ -49,6 +50,7 @@ func CurrentManifest() Manifest {
 	}
 }
 
+// Capabilities returns an independent list of the helper's supported operations.
 func Capabilities() []string {
 	return []string{CapabilityDial, CapabilityRemoteForward, CapabilityAgentForward, CapabilitySFTP, CapabilitySCP}
 }

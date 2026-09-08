@@ -42,6 +42,7 @@ type remoteStopRequest struct {
 	Bind string `json:"bind"`
 }
 
+// ConnectionInfo identifies a forwarded TCP connection's listener and peer.
 type ConnectionInfo struct {
 	Bind          string
 	RequestedBind string
@@ -226,6 +227,8 @@ type remoteForwardClient struct {
 	forwards map[string]*RemoteListener
 }
 
+// RemoteListener accepts target-side TCP connections over its owning Client.
+// Obtain one through Client.ListenRemote; Cancel stops only this listener.
 type RemoteListener struct {
 	client     *remoteForwardClient
 	actualBind string
@@ -355,10 +358,13 @@ func (c *remoteForwardClient) close() {
 	}
 }
 
+// ActualPort returns the target-side port allocated when the listener was opened.
 func (f *RemoteListener) ActualPort() uint32 {
 	return f.actualPort
 }
 
+// Accept waits for the next connection, listener closure, or context cancellation.
+// The caller owns the returned stream.
 func (f *RemoteListener) Accept(ctx context.Context) (ioproxy.HalfCloser, ConnectionInfo, error) {
 	ctxDone := context.AfterFunc(ctx, func() {
 		f.mu.Lock()
@@ -394,6 +400,8 @@ func (f *RemoteListener) Accept(ctx context.Context) (ioproxy.HalfCloser, Connec
 	}
 }
 
+// Cancel stops the listener and pending accepts without closing accepted streams.
+// It is idempotent; closing the Client also releases the listener.
 func (f *RemoteListener) Cancel(ctx context.Context) error {
 	f.cancelOnce.Do(func() {
 		f.client.removeForward(f)

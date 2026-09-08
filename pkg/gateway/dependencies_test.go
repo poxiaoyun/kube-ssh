@@ -147,11 +147,13 @@ func TestBuildAuthorizerKubernetesSARDoesNotFallThroughToAllowAll(t *testing.T) 
 
 func TestBuildAuthenticatorWebhook(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(authn.WebhookAuthenticateResponse{
-			Authenticated: true,
-			User:          authn.UserInfo{Name: "alice"},
-			Method:        "webhook",
-		})
+		_ = json.
+			NewEncoder(w).
+			Encode(authn.WebhookAuthenticateResponse{
+				Authenticated: true,
+				User:          authn.UserInfo{Name: "alice"},
+				Method:        "webhook",
+			})
 	}))
 	defer server.Close()
 
@@ -173,7 +175,9 @@ func TestBuildAuthenticatorWebhook(t *testing.T) {
 
 func TestBuildAuthorizerWebhookDoesNotFallThroughToAllowAll(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(authz.WebhookAuthorizeResponse{Decision: authz.DecisionNoOpinion})
+		_ = json.
+			NewEncoder(w).
+			Encode(authz.WebhookAuthorizeResponse{Decision: authz.DecisionNoOpinion})
 	}))
 	defer server.Close()
 
