@@ -4,6 +4,8 @@ kube-ssh exposes Kubernetes workloads through standard OpenSSH clients. It can
 either provide SSH semantics for containers without `sshd`, or proxy the full
 SSH protocol to an existing upstream `sshd`.
 
+See the [changelog](CHANGELOG.md) for release changes and upgrade notes.
+
 ## Architecture
 
 ```text
