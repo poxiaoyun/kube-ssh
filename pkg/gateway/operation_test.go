@@ -3,13 +3,10 @@ package gateway
 import (
 	"context"
 	"errors"
-	"net"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
-	gossh "github.com/gliderlabs/ssh"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
@@ -39,6 +36,7 @@ func TestAuthorizeOperationAllow(t *testing.T) {
 		},
 	}
 	s := &gateway{
+		metrics: metrics.NopRecorder{},
 		authz: authz.AuthorizerFunc(func(_ context.Context, req authz.Request) (authz.Decision, string, error) {
 			if req.User.Name != "alice" {
 				t.Fatalf("user = %q, want alice", req.User.Name)
@@ -110,6 +108,7 @@ func TestAuthorizeOperationDenyAndError(t *testing.T) {
 				audit:  audit.Event{Fields: map[string]string{}},
 			}
 			s := &gateway{
+				metrics: metrics.NopRecorder{},
 				authz: authz.AuthorizerFunc(func(context.Context, authz.Request) (authz.Decision, string, error) {
 					return tt.decision, tt.reason, tt.err
 				}),
@@ -180,8 +179,10 @@ func TestForwardOperationSpecs(t *testing.T) {
 
 func TestAcceptAuthenticatedResolvesTargetWithIdentity(t *testing.T) {
 	ctx := newTestSSHContext()
+	ctx.policyConn = newSessionPolicyConn(benchmarkConn{}, effectiveSessionPolicy{})
+	defer ctx.policyConn.Close()
 	resolver := &captureResolver{target: targetFixturePtr()}
-	s := &gateway{resolver: resolver, podBackend: testBackend{}, audit: audit.NopRecorder{}}
+	s := &gateway{metrics: metrics.NopRecorder{}, opts: NewDefaultOptions(), resolver: resolver, podBackend: testBackend{}, audit: audit.NopRecorder{}}
 	info := &authn.AuthenticateInfo{
 		User:   authn.UserInfo{Name: "alice", Groups: []string{"dev"}},
 		Method: "publickey",
@@ -215,11 +216,8 @@ func TestAcceptAuthenticatedResolvesTargetWithIdentity(t *testing.T) {
 	if resolver.request.Hints[0].Kind != "kube" {
 		t.Fatalf("resolver target hint kind = %q, want kube", resolver.request.Hints[0].Kind)
 	}
-	if _, ok := authenticateFromContext(ctx); !ok {
-		t.Fatal("authenticateFromContext() missing")
-	}
-	if _, ok := targetFromContext(ctx); !ok {
-		t.Fatal("targetFromContext() missing")
+	if result := ctx.snapshot().authenticated; result == nil || result.info.User.Name != info.User.Name || result.target == nil {
+		t.Fatalf("authenticated connection not published: %+v", result)
 	}
 }
 
@@ -242,6 +240,7 @@ func TestResolveSessionPolicyAppliesAccessPolicy(t *testing.T) {
 		},
 	}
 	s := &gateway{
+		metrics:      metrics.NopRecorder{},
 		opts:         opts,
 		accessPolicy: fakeAccessPolicyGetter{access: access},
 	}
@@ -280,6 +279,7 @@ func TestResolveSessionPolicyUsesSSHUserAccess(t *testing.T) {
 		},
 	}
 	s := &gateway{
+		metrics:      metrics.NopRecorder{},
 		opts:         opts,
 		accessPolicy: fakeAccessPolicyGetter{access: access},
 	}
@@ -335,66 +335,8 @@ func (g fakeAccessPolicyGetter) Get(_ context.Context, namespace, name string) (
 	return g.access, nil
 }
 
-type testSSHContext struct {
-	context.Context
-	mu     sync.Mutex
-	values map[any]any
-}
-
-func newTestSSHContext() *testSSHContext {
-	return &testSSHContext{
-		Context: context.Background(),
-		values:  make(map[any]any),
-	}
-}
-
-func (c *testSSHContext) Lock() {
-	c.mu.Lock()
-}
-
-func (c *testSSHContext) Unlock() {
-	c.mu.Unlock()
-}
-
-func (c *testSSHContext) User() string { return "default.nginx.app" }
-
-func (c *testSSHContext) SessionID() string { return "session" }
-
-func (c *testSSHContext) ClientVersion() string { return "client" }
-
-func (c *testSSHContext) ServerVersion() string { return "server" }
-
-func (c *testSSHContext) RemoteAddr() net.Addr { return testAddr("remote") }
-
-func (c *testSSHContext) LocalAddr() net.Addr { return testAddr("local") }
-
-func (c *testSSHContext) Permissions() *gossh.Permissions { return &gossh.Permissions{} }
-
-func (c *testSSHContext) SetValue(key, value any) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.values[key] = value
-}
-
-func (c *testSSHContext) Value(key any) any {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if value, ok := c.values[key]; ok {
-		return value
-	}
-	return c.Context.Value(key)
-}
-
-func (c *testSSHContext) Deadline() (time.Time, bool) {
-	return c.Context.Deadline()
-}
-
-func (c *testSSHContext) Done() <-chan struct{} {
-	return c.Context.Done()
-}
-
-func (c *testSSHContext) Err() error {
-	return c.Context.Err()
+func newTestSSHContext() *connectionState {
+	return &connectionState{Context: context.Background(), audit: &connectionAuditState{id: "test-connection"}, metadata: connectionMetadata{user: "default.nginx.app", clientVersion: "client", serverVersion: "server", remote: testAddr("remote"), local: testAddr("local")}}
 }
 
 type testAddr string

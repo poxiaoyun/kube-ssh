@@ -76,6 +76,8 @@ type AccessPolicyOptions struct {
 }
 
 type AuthenticationOptions struct {
+	// Methods limits advertised SSH authentication methods. Nil enables all supported methods.
+	Methods        []string
 	Anonymous      bool
 	AuthorizedKeys []authn.AuthorizedKeyEntry
 	Passwords      []authn.PasswordEntry
@@ -117,6 +119,7 @@ func NewDefaultOptions() *Options {
 			ConnectTimeout: sshproxy.DefaultConnectTimeout,
 		},
 		Authentication: AuthenticationOptions{
+			Methods: []string{"publickey", "password"},
 			Webhook: webhookclient.Options{Timeout: webhookclient.DefaultTimeout},
 		},
 		Authorization: AuthorizationOptions{

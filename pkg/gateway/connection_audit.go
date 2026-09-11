@@ -4,7 +4,6 @@ import (
 	"net"
 	"time"
 
-	gossh "github.com/gliderlabs/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 )
@@ -16,21 +15,18 @@ type connectionAuditState struct {
 	started time.Time
 }
 
-func (s *gateway) startConnectionAudit(ctx gossh.Context, conn net.Conn) func() {
+func (s *gateway) startConnectionAudit(ctx *connectionState) func() {
 	state := &connectionAuditState{id: audit.NewID(), started: time.Now()}
-	withConnectionAudit(ctx, state)
-	event := s.connectionEvent(ctx, state, "connection.start")
-	if conn != nil {
-		event.Connection.RemoteAddress = addressString(conn.RemoteAddr())
-		event.Connection.LocalAddress = addressString(conn.LocalAddr())
-	}
+	ctx.audit = state
+	event := s.connectionEvent(ctx, "connection.start")
+
 	s.audit.Record(ctx, event)
 	return func() {
 		result := "rejected"
-		if _, ok := authenticateFromContext(ctx); ok {
+		if ctx.snapshot().established {
 			result = "success"
 		}
-		end := s.connectionEvent(ctx, state, "connection.end")
+		end := s.connectionEvent(ctx, "connection.end")
 		end.Outcome = &audit.Outcome{
 			Result: result,
 			DurationMS: time.
@@ -41,31 +37,25 @@ func (s *gateway) startConnectionAudit(ctx gossh.Context, conn net.Conn) func() 
 	}
 }
 
-func (s *gateway) connectionEvent(ctx gossh.Context, state *connectionAuditState, eventType string) audit.Event {
+func (s *gateway) connectionEvent(ctx *connectionState, eventType string) audit.Event {
 	event := audit.NewEvent(eventType)
+	snapshot := ctx.snapshot()
+	meta := snapshot.metadata
 	event.Connection = &audit.Connection{
-		SSHUsername:   contextString(ctx, gossh.ContextKeyUser),
-		RemoteAddress: contextAddress(ctx, gossh.ContextKeyRemoteAddr),
-		LocalAddress:  contextAddress(ctx, gossh.ContextKeyLocalAddr),
-		ClientVersion: contextString(ctx, gossh.ContextKeyClientVersion),
-		ServerVersion: contextString(ctx, gossh.ContextKeyServerVersion),
+		SSHUsername: meta.user, RemoteAddress: addressString(meta.remote), LocalAddress: addressString(meta.local), ClientVersion: meta.clientVersion, ServerVersion: meta.serverVersion,
 	}
-	if state == nil {
-		return event
-	}
-	event.Correlation.ConnectionID = state.id
-	if info, ok := authenticateFromContext(ctx); ok {
-		event.Actor = auditActor(info, auditFingerprintFromContext(ctx))
-		event.Access = auditAccess(info)
-	}
-	if tgt, ok := targetFromContext(ctx); ok {
-		event.Target = auditTarget(tgt)
+
+	event.Correlation.ConnectionID = ctx.audit.id
+	if result := snapshot.authenticated; result != nil {
+		event.Actor = auditActor(result.info, result.fingerprint)
+		event.Access = auditAccess(result.info)
+		event.Target = auditTarget(result.target)
 	}
 	return event
 }
 
-func (s *gateway) recordAuthentication(ctx gossh.Context, method, fingerprint, result string, info *authn.AuthenticateInfo, err error) {
-	event := s.connectionEvent(ctx, connectionAuditFromContext(ctx), "authentication.result")
+func (s *gateway) recordAuthentication(ctx *connectionState, method, fingerprint, result string, info *authn.AuthenticateInfo, err error) {
+	event := s.connectionEvent(ctx, "authentication.result")
 	event.Outcome = &audit.Outcome{Result: result}
 	if err != nil {
 		event.Outcome.Reason = "authentication rejected"
@@ -85,14 +75,4 @@ func addressString(addr net.Addr) string {
 		return ""
 	}
 	return addr.String()
-}
-
-func contextString(ctx gossh.Context, key any) string {
-	value, _ := ctx.Value(key).(string)
-	return value
-}
-
-func contextAddress(ctx gossh.Context, key any) string {
-	value, _ := ctx.Value(key).(net.Addr)
-	return addressString(value)
 }

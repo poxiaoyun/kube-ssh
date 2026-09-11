@@ -2,7 +2,8 @@
 package podssh
 
 import (
-	gossh "github.com/gliderlabs/ssh"
+	"context"
+
 	cryptossh "golang.org/x/crypto/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend"
@@ -13,7 +14,7 @@ import (
 // Protocol terminates SSH protocol messages and executes accepted operations
 // through the Pod backend.
 type Protocol struct {
-	ctx          gossh.Context
+	ctx          context.Context
 	target       *target.Target
 	backend      backend.Backend
 	begin        sshprotocol.BeginOperationFunc
@@ -25,7 +26,7 @@ type Protocol struct {
 
 // NewProtocol creates a Pod SSH adapter for one authenticated connection.
 func NewProtocol(
-	ctx gossh.Context,
+	ctx context.Context,
 	tgt *target.Target,
 	operationBackend backend.Backend,
 	begin sshprotocol.BeginOperationFunc,

@@ -72,13 +72,6 @@ func (c *sessionPolicyConn) Close() error {
 	return c.Conn.Close()
 }
 
-// gliderlabs/ssh sets its own global deadlines on the connection returned by
-// ConnCallback. Dynamic session policy is authoritative, so those deadlines
-// must not overwrite this feature's timer.
-func (c *sessionPolicyConn) SetDeadline(time.Time) error      { return nil }
-func (c *sessionPolicyConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *sessionPolicyConn) SetWriteDeadline(time.Time) error { return nil }
-
 func (c *sessionPolicyConn) touch() {
 	c.lastActivityNS.Store(time.
 		Since(c.started).

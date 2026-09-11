@@ -40,6 +40,32 @@ An Access `spec.gatewayClassName` must exactly match the gateway class. Gateway 
 
 The default Service is `NodePort` on port `30022`. Choose `ClusterIP`, `NodePort`, or `LoadBalancer` according to the cluster network. `advertiseAddresses` should contain addresses reachable by users, not an internal-only Service address.
 
+## Advanced gateway options
+
+The Chart configures the Kubernetes entry, host key and Access/SAR integration.
+Authentication methods, session policy, Webhooks, metrics path and upstream SSH
+timeouts use program defaults. Override them with `kubeSsh.extraArgs`:
+
+```yaml
+kubeSsh:
+  extraArgs:
+    - --authentication-method=publickey
+    - --policy-default-idle-timeout=15m
+```
+
+The gateway allows `publickey` and `password` by default. Each Access further
+limits the advertised methods to its configured credential types, including
+Secret references. An Access with only public keys does not prompt for a
+password. Credentials must still match.
+
+When upgrading, move overrides from the former `authentication`, `authorization`,
+`policy`, `accessPolicy`, `helper`, `externalSSH` and `metrics.path` values to CLI
+flags. Use `extraEnvVars` with `secretKeyRef` or `extraEnvVarsSecret` for secrets,
+plus `extraVolumes`/`extraVolumeMounts` when a file is needed. CLI flags take
+precedence over environment variables. The Chart enables Access and Kubernetes
+SAR and disables allow-all; overriding these is an explicit deployment choice.
+Node-specific flags use `kubeSsh.node.extraArgs`.
+
 ## SSH host key
 
 The Chart automatically generates an Ed25519 host key and stores it in a Secret so the SSH fingerprint remains stable across Pod restarts and upgrades. To reuse a centrally managed key, set `kubeSsh.hostKey.existingSecret`; the Secret must contain the key configured by `kubeSsh.hostKey.secretKey`. Operators may alternatively provide `kubeSsh.hostKey.privateKey` inline. The precedence is `existingSecret`, `privateKey`, then automatic generation. Set `kubeSsh.hostKey.autoGenerate=false` to disable host-key management and let the gateway use an ephemeral key. The static `deploy/install.yaml` does this intentionally so it never distributes a shared private key.

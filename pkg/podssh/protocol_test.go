@@ -2,13 +2,15 @@ package podssh_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
 	"net"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
-	gossh "github.com/gliderlabs/ssh"
 	cryptossh "golang.org/x/crypto/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 	"xiaoshiai.cn/kube-ssh/pkg/podssh"
@@ -16,10 +18,6 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/sshprotocol"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
-
-type protocolContextKey string
-
-const podProtocolKey protocolContextKey = "pod-protocol"
 
 func TestProtocolExecutesPodSession(t *testing.T) {
 	executor := &execBackend{}
@@ -71,56 +69,64 @@ func TestProtocolExecutesPodSession(t *testing.T) {
 
 func startPodSSHServer(t *testing.T, executor backend.Backend, begin sshprotocol.BeginOperationFunc) string {
 	t.Helper()
-	server := &gossh.Server{
-		PasswordHandler: func(ctx gossh.Context, password string) bool {
-			if password != "secret" {
-				return false
-			}
-			protocol := podssh.NewProtocol(
-				ctx,
-				&target.Target{
-					Kind: target.KindPod,
-					Options: []target.Option{
-						{Key: "namespaces", Value: "default"},
-						{Key: "pods", Value: "notebook"},
-					},
-				},
-				executor,
-				begin,
-				metrics.NopRecorder{},
-				"/bin/sh",
-				func(key string) bool { return key == "LANG" },
-			)
-			ctx.SetValue(podProtocolKey, sshprotocol.ConnectionProtocol(protocol))
-			go func() {
-				<-ctx.Done()
-				protocol.Close()
-			}()
-			return true
-		},
-		ChannelHandlers: map[string]gossh.ChannelHandler{
-			"default": func(_ *gossh.Server, conn *cryptossh.ServerConn, channel cryptossh.NewChannel, ctx gossh.Context) {
-				ctx.Value(podProtocolKey).(sshprotocol.ConnectionProtocol).
-					HandleChannel(conn, channel)
-			},
-		},
-		RequestHandlers: map[string]gossh.RequestHandler{
-			"default": func(ctx gossh.Context, _ *gossh.Server, request *cryptossh.Request) (bool, []byte) {
-				conn := ctx.Value(gossh.ContextKeyConn).(*cryptossh.ServerConn)
-				return ctx.Value(podProtocolKey).(sshprotocol.ConnectionProtocol).
-					HandleGlobalRequest(conn, request)
-			},
-		},
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
+	signer, err := cryptossh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := &cryptossh.ServerConfig{PasswordCallback: func(_ cryptossh.ConnMetadata, password []byte) (*cryptossh.Permissions, error) {
+		if string(password) != "secret" {
+			return nil, errors.New("permission denied")
+		}
+		return nil, nil
+	}}
+	config.AddHostKey(signer)
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = server.Close()
-		_ = listener.Close()
-	})
-	go func() { _ = server.Serve(listener) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	var connections sync.WaitGroup
+	done := make(chan struct{})
+	t.Cleanup(func() { cancel(); listener.Close(); <-done; connections.Wait() })
+	go func() {
+		defer close(done)
+		for {
+			raw, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connections.Go(func() {
+				ctx, cancel := context.WithCancel(ctx)
+				var handlers sync.WaitGroup
+				defer func() { cancel(); raw.Close(); handlers.Wait() }()
+				stop := context.AfterFunc(ctx, func() { raw.Close() })
+				defer stop()
+				defer raw.Close()
+				conn, channels, requests, err := cryptossh.NewServerConn(raw, config)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				protocol := podssh.NewProtocol(ctx, &target.Target{Kind: target.KindPod, Options: []target.Option{{Key: "namespaces", Value: "default"}, {Key: "pods", Value: "notebook"}}}, executor, begin, metrics.NopRecorder{}, "/bin/sh", func(key string) bool { return key == "LANG" })
+				defer protocol.Close()
+				handlers.Go(func() {
+					for request := range requests {
+						ok, payload := protocol.HandleGlobalRequest(conn, request)
+						request.Reply(ok, payload)
+					}
+				})
+				for channel := range channels {
+					handlers.Go(func() { protocol.HandleChannel(conn, channel) })
+				}
+			})
+		}
+	}()
+
 	return listener.Addr().
 		String()
 }

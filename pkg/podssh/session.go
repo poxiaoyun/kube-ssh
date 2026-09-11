@@ -1,49 +1,49 @@
 package podssh
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
 
-	gossh "github.com/gliderlabs/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend"
 	"xiaoshiai.cn/kube-ssh/pkg/sshprotocol"
 )
 
-func (s *Protocol) handleSession(sess gossh.Session) {
-	if requestTypeFromSession(sess) == sshprotocol.RequestExec && isSCPCommand(sess.Command()) {
-		s.handleSCP(sess)
-		return
+func (s *Protocol) handleSession(sess sshprotocol.ServerSession) int {
+	if sess.RequestType() == sshprotocol.RequestExec && isSCPCommand(sess.Command()) {
+		return s.handleSCP(sess)
 	}
-	s.handleExecOperation(sess, s.resolveSession)
+	operation, request := s.resolveSession(sess)
+	return s.runSessionOperation(sess, operation, request.TTY, func(ctx context.Context) (int, error) {
+		return s.backend.Exec(ctx, request)
+	})
 }
 
-func (s *Protocol) handleSCP(sess gossh.Session) {
+func (s *Protocol) handleSCP(sess sshprotocol.ServerSession) int {
 	operation := sessionOperation(sshprotocol.RequestExec, sess.RawCommand())
-	s.handleStreamOperation(sess, operation, func(sc *sessionContext) (int, error) {
-		return s.backend.SCP(sc.ctx, backend.SCPRequest{
+	return s.runSessionOperation(sess, operation, false, func(ctx context.Context) (int, error) {
+		return s.backend.SCP(ctx, backend.SCPRequest{
 			StreamRequest: backend.StreamRequest{
-				Target: sc.target,
-				Stdin:  sc.session,
-				Stdout: sc.session,
-				Stderr: sc.session.Stderr(),
+				Target: s.target,
+				Stdin:  sess,
+				Stdout: sess,
+				Stderr: sess.Stderr(),
 			},
-			Args: sc.session.Command()[1:],
+			Args: sess.Command()[1:],
 		})
 	})
 }
 
-func (s *Protocol) resolveSession(sc *sessionContext) (sshprotocol.Operation, backend.ExecRequest) {
-	sess := sc.session
-
+func (s *Protocol) resolveSession(sess sshprotocol.ServerSession) (sshprotocol.Operation, backend.ExecRequest) {
 	rawCmd := sess.RawCommand()
-	requestType := requestTypeFromSession(sess)
+	requestType := sess.RequestType()
 	operation := sessionOperation(requestType, rawCmd)
 
 	ptyInfo, winCh, isPty := sess.Pty()
 	env := s.filterEnv(sess.Environ())
-	if sc.agentForward != nil && sc.agentForward.SocketPath() != "" {
-		env = appendEnvOverride(env, sshprotocol.EnvironmentSSHAuthSock, sc.agentForward.SocketPath())
+	if socket := sess.AgentForwardSocket(); socket != "" {
+		env = appendEnvOverride(env, sshprotocol.EnvironmentSSHAuthSock, socket)
 	}
 	if isPty && ptyInfo.Term != "" {
 		env = append(env, "TERM="+ptyInfo.Term)
@@ -52,7 +52,7 @@ func (s *Protocol) resolveSession(sc *sessionContext) (sshprotocol.Operation, ba
 	command := buildCommand(requestType == sshprotocol.RequestExec, rawCmd, env, s.defaultShell)
 
 	req := backend.ExecRequest{
-		Target:  sc.target,
+		Target:  s.target,
 		Command: command,
 		Stdin:   sess,
 		Stdout:  sess,
@@ -87,7 +87,7 @@ func isSCPCommand(argv []string) bool {
 	return false
 }
 
-func writeSessionError(sess gossh.Session, isPty bool, err error) {
+func writeSessionError(sess sshprotocol.ServerSession, isPty bool, err error) {
 	if isPty {
 		_, _ = fmt.Fprintln(sess, err)
 		return
@@ -111,13 +111,6 @@ func buildCommand(isExec bool, rawCmd string, env []string, defaultShell string)
 	return append(argv, defaultShell)
 }
 
-func requestTypeFromSession(sess gossh.Session) string {
-	if typer, ok := sess.(sessionRequestTyper); ok {
-		return typer.SessionRequestType()
-	}
-	return ""
-}
-
 func appendEnvOverride(env []string, key, value string) []string {
 	prefix := key + "="
 	result := make([]string, 0, len(env)+1)
@@ -130,14 +123,14 @@ func appendEnvOverride(env []string, key, value string) []string {
 	return append(result, prefix+value)
 }
 
-// windowSizeQueue adapts gliderlabs/ssh window events to backend.TerminalSizeQueue.
+// windowSizeQueue adapts SSH window events to backend.TerminalSizeQueue.
 // It sends the initial PTY size on the first Next() call, then blocks on the
 // channel for subsequent resize events.
 type windowSizeQueue struct {
 	initialSent bool
 	initW       uint16
 	initH       uint16
-	ch          <-chan gossh.Window
+	ch          <-chan sshprotocol.Window
 }
 
 func (q *windowSizeQueue) Next() *backend.TerminalSize {
@@ -161,4 +154,16 @@ func (p *Protocol) filterEnv(envs []string) []string {
 		}
 	}
 	return result
+}
+
+func (s *Protocol) handleSFTP(sess sshprotocol.ServerSession) int {
+	operation := sshprotocol.Operation{ChannelType: sshprotocol.ChannelSession, RequestType: sshprotocol.RequestSubsystem, Subsystem: sshprotocol.SubsystemSFTP}
+	return s.runSessionOperation(sess, operation, false, func(ctx context.Context) (int, error) {
+		return s.backend.SFTP(ctx, backend.StreamRequest{
+			Target: s.target,
+			Stdin:  sess,
+			Stdout: sess,
+			Stderr: sess.Stderr(),
+		})
+	})
 }

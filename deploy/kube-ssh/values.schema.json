@@ -10,7 +10,11 @@
           "type": "array",
           "title": "Advertise addresses",
           "description": "Optional externally reachable host:port addresses published to Access status. Multiple addresses are supported. When omitted, a NodePort Service publishes {NodeIP}:<nodePort> automatically.",
-          "examples": [["ssh.example.com:2222"]],
+          "examples": [
+            [
+              "ssh.example.com:2222"
+            ]
+          ],
           "uniqueItems": true,
           "items": {
             "type": "string",
@@ -25,8 +29,11 @@
             "transport": {
               "type": "string",
               "title": "Pod SSH transport",
-              "description": "Selects how Pod SSH operations reach target containers.",
-              "enum": ["apiserver", "cri"],
+              "description": "Selects how Pod SSH operations reach target containers. CRI uses automatic runtime discovery and Chart-managed mTLS by default; no additional configuration is needed for standard runtime socket paths.",
+              "enum": [
+                "apiserver",
+                "cri"
+              ],
               "x-enum": [
                 {
                   "name": "API Server",
@@ -38,77 +45,58 @@
                   "description": "Sends streams over mTLS to kube-ssh-node on the target node, then uses CRI. High-volume data bypasses the API server and never falls back to the API Server transport.",
                   "value": "cri"
                 }
-              ]
-            },
-            "cri": {
-              "type": "object",
-              "properties": {
-                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-                "serverName": {"type": "string"}
-              }
-            }
-          }
-        },
-        "externalSSH": {
-          "type": "object",
-          "title": "SSH proxy",
-          "properties": {
-            "connectTimeout": {
-              "type": "string",
-              "title": "Connect timeout",
-              "minLength": 1
-            }
-          }
-        },
-        "node": {
-          "type": "object",
-          "title": "Node-local CRI data plane",
-          "properties": {
-            "runtimeEndpoints": {
-              "type": "array",
-              "title": "CRI runtime endpoints",
-              "description": "Candidate CRI v1 Unix endpoints checked in order. Leave empty to probe common containerd, CRI-O, K3s, K0s, and cri-dockerd paths.",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "pattern": "^unix:///"
-              }
-            },
-            "managementPort": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "expectedClientName": {"type": "string", "minLength": 1},
-            "tls": {
-              "type": "object",
-              "properties": {
-                "existingSecret": {
-                  "type": "string",
-                  "title": "Existing node mTLS Secret",
-                  "description": "Uses an operator-managed Secret containing ca.crt, tls.crt, and tls.key. The same certificate is used by the node server and gateway client; its SAN must cover the Node server name and its common name must match expectedClientName. Leave empty to let Helm generate and preserve the credentials."
-                }
-              }
+              ],
+              "default": "apiserver"
             }
           }
         },
         "service": {
           "type": "object",
           "title": "Service",
-          "properties": {
-            "type": {
-              "type": "string",
-              "title": "Service type",
-              "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
-            },
-            "nodePorts": {
-              "type": "object",
+          "allOf": [
+            {
               "properties": {
-                "ssh": {
-                  "type": "integer",
-                  "title": "SSH node port",
-                  "minimum": 30000,
-                  "maximum": 32767
+                "type": {
+                  "type": "string",
+                  "title": "Service type",
+                  "enum": [
+                    "ClusterIP",
+                    "NodePort",
+                    "LoadBalancer"
+                  ]
+                }
+              },
+              "if": {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "NodePort",
+                      "LoadBalancer"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "nodePorts": {
+                    "type": "object",
+                    "properties": {
+                      "ssh": {
+                        "type": "integer",
+                        "title": "SSH node port",
+                        "default": 30022,
+                        "minimum": 30000,
+                        "maximum": 32767
+                      }
+                    }
+                  }
                 }
               }
             }
-          }
+          ]
         }
       }
     }

@@ -15,7 +15,6 @@ tool (
 
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
-	github.com/gliderlabs/ssh v0.3.8
 	github.com/google/uuid v1.6.0
 	github.com/moby/spdystream v0.5.1
 	github.com/onsi/ginkgo/v2 v2.32.0

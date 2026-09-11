@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/anmitsu/go-shlex"
-	gossh "github.com/gliderlabs/ssh"
-	cryptossh "golang.org/x/crypto/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
 	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 	"xiaoshiai.cn/kube-ssh/pkg/podssh"
@@ -17,7 +15,7 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
-func (s *gateway) selectConnectionProtocol(ctx gossh.Context, tgt *target.Target, policy effectiveSessionPolicy) (sshprotocol.ConnectionProtocol, error) {
+func (s *gateway) selectConnectionProtocol(ctx *connectionState, tgt *target.Target, policy effectiveSessionPolicy) (sshprotocol.ConnectionProtocol, error) {
 	switch tgt.Kind {
 	case target.KindPod:
 		if s.podBackend == nil {
@@ -30,7 +28,7 @@ func (s *gateway) selectConnectionProtocol(ctx gossh.Context, tgt *target.Target
 			func(operation sshprotocol.Operation) (sshprotocol.FinishOperation, error) {
 				return s.beginConnectionOperation(ctx, operation)
 			},
-			s.metricsRecorder(),
+			s.metrics,
 			policy.DefaultShell,
 			policy.envAllowed,
 		), nil
@@ -52,22 +50,8 @@ func (s *gateway) selectConnectionProtocol(ctx gossh.Context, tgt *target.Target
 	}
 }
 
-func (s *gateway) acceptChannel(_ *gossh.Server, conn *cryptossh.ServerConn, newChannel cryptossh.NewChannel, ctx gossh.Context) {
-	connectionProtocolFromContext(ctx).
-		HandleChannel(conn, newChannel)
-}
-
-func (s *gateway) forwardGlobalRequest(ctx gossh.Context, _ *gossh.Server, request *cryptossh.Request) (bool, []byte) {
-	conn := ctx.Value(gossh.ContextKeyConn).(*cryptossh.ServerConn)
-	return connectionProtocolFromContext(ctx).
-		HandleGlobalRequest(conn, request)
-}
-
-func (s *gateway) beginConnectionOperation(ctx gossh.Context, operation sshprotocol.Operation) (sshprotocol.FinishOperation, error) {
-	sc, err := s.newOperationContext(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (s *gateway) beginConnectionOperation(ctx *connectionState, operation sshprotocol.Operation) (sshprotocol.FinishOperation, error) {
+	sc := newOperationContext(ctx)
 	spec := connectionOperationSpec(sc, operation)
 	finish := s.startOperation(sc, spec)
 	reason, allowed := s.authorizeOperation(sc, spec)

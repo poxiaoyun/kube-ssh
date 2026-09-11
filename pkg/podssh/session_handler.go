@@ -2,58 +2,48 @@ package podssh
 
 import (
 	"bytes"
-	"encoding/binary"
+	"context"
 	"errors"
 	"fmt"
-	"net"
+	"math"
 	"sync"
 
 	"github.com/anmitsu/go-shlex"
-	gossh "github.com/gliderlabs/ssh"
 	cryptossh "golang.org/x/crypto/ssh"
-	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend"
 	"xiaoshiai.cn/kube-ssh/pkg/sshprotocol"
 )
 
-const maxSignalBufferSize = 128
+var _ sshprotocol.ServerSession = (*serverSession)(nil)
 
-type sessionRequestTyper interface {
-	// SessionRequestType identifies the request that started this session.
-	SessionRequestType() string
-}
-
-func (s *Protocol) handleSessionChannel(conn cryptossh.Conn, newChan cryptossh.NewChannel) {
-	ch, reqs, err := newChan.Accept()
+func (p *Protocol) handleSessionChannel(conn cryptossh.Conn, newChan cryptossh.NewChannel) {
+	channel, requests, err := newChan.Accept()
 	if err != nil {
 		return
 	}
-	sess := &serverSession{
-		Channel:  ch,
-		protocol: s,
-		conn:     conn,
-		ctx:      s.ctx,
-	}
-	sess.handleRequests(reqs)
+	ctx, cancel := context.WithCancel(p.ctx)
+	session := &serverSession{Channel: channel, protocol: p, conn: conn, ctx: ctx, cancel: cancel}
+	session.handleRequests(requests)
 }
 
+// The request loop owns session parameters until it starts the operation.
+// Afterwards those parameters are immutable; only resize events are published.
+// handleRequests does not return until the operation and agent forwarding end.
 type serverSession struct {
-	sync.Mutex
 	cryptossh.Channel
+	protocol *Protocol
+	conn     cryptossh.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	tasks    sync.WaitGroup
+	exitOnce sync.Once
+	exitErr  error
 
-	protocol     *Protocol
-	conn         cryptossh.Conn
-	handled      bool
-	exited       bool
-	pty          *gossh.Pty
-	winch        chan gossh.Window
+	started      bool
+	pty          *sshprotocol.PTY
+	winch        chan sshprotocol.Window
 	env          []string
 	rawCmd       string
-	subsystem    string
 	requestType  string
-	ctx          gossh.Context
-	sigCh        chan<- gossh.Signal
-	sigBuf       []gossh.Signal
-	breakCh      chan<- bool
 	agentForward *sessionAgentForward
 }
 
@@ -61,319 +51,193 @@ func (s *serverSession) Write(p []byte) (int, error) {
 	if s.pty == nil {
 		return s.Channel.Write(p)
 	}
-	m := len(p)
+	size := len(p)
 	p = bytes.ReplaceAll(p, []byte{'\n'}, []byte{'\r', '\n'})
 	p = bytes.ReplaceAll(p, []byte{'\r', '\r', '\n'}, []byte{'\r', '\n'})
 	n, err := s.Channel.Write(p)
-	if n > m {
-		n = m
-	}
-	return n, err
+	return min(n, size), err
 }
 
-func (s *serverSession) PublicKey() gossh.PublicKey {
-	sessionKey := s.ctx.Value(gossh.ContextKeyPublicKey)
-	if sessionKey == nil {
-		return nil
-	}
-	return sessionKey.(gossh.PublicKey)
-}
-
-func (s *serverSession) Permissions() gossh.Permissions {
-	perms := s.ctx.Value(gossh.ContextKeyPermissions).(*gossh.Permissions)
-	return *perms
-}
-
-func (s *serverSession) Context() gossh.Context { return s.ctx }
-
+func (s *serverSession) Context() context.Context { return s.ctx }
 func (s *serverSession) Exit(code int) error {
-	s.Lock()
-	defer s.Unlock()
-	if s.exited {
-		return errors.New("Session.Exit called multiple times")
-	}
-	s.exited = true
-
-	status := struct{ Status uint32 }{uint32(code)}
-	_, err := s.SendRequest(sshprotocol.RequestExitStatus, false, cryptossh.Marshal(&status))
-	if err != nil {
-		return err
-	}
-	return s.Close()
+	s.exitOnce.Do(func() {
+		defer s.cancel()
+		_, err := s.SendRequest(sshprotocol.RequestExitStatus, false, cryptossh.Marshal(struct{ Status uint32 }{uint32(code)}))
+		s.exitErr = errors.Join(err, s.Channel.Close())
+	})
+	return s.exitErr
 }
-
-func (s *serverSession) User() string { return s.conn.User() }
-
-func (s *serverSession) RemoteAddr() net.Addr { return s.conn.RemoteAddr() }
-
-func (s *serverSession) LocalAddr() net.Addr { return s.conn.LocalAddr() }
-
-func (s *serverSession) Environ() []string { return append([]string(nil), s.env...) }
-
+func (s *serverSession) Environ() []string  { return append([]string(nil), s.env...) }
 func (s *serverSession) RawCommand() string { return s.rawCmd }
-
 func (s *serverSession) Command() []string {
-	cmd, _ := shlex.Split(s.rawCmd, true)
-	return append([]string(nil), cmd...)
+	command, _ := shlex.Split(s.rawCmd, true)
+	return command
 }
-
-func (s *serverSession) Subsystem() string { return s.subsystem }
-
-func (s *serverSession) Pty() (gossh.Pty, <-chan gossh.Window, bool) {
+func (s *serverSession) RequestType() string { return s.requestType }
+func (s *serverSession) Pty() (sshprotocol.PTY, <-chan sshprotocol.Window, bool) {
 	if s.pty == nil {
-		return gossh.Pty{}, s.winch, false
+		return sshprotocol.PTY{}, nil, false
 	}
 	return *s.pty, s.winch, true
 }
-
-func (s *serverSession) Signals(c chan<- gossh.Signal) {
-	s.Lock()
-	defer s.Unlock()
-	s.sigCh = c
-	if len(s.sigBuf) == 0 {
-		return
-	}
-	go func() {
-		for _, sig := range s.sigBuf {
-			s.sigCh <- sig
-		}
-	}()
-}
-
-func (s *serverSession) Break(c chan<- bool) {
-	s.Lock()
-	defer s.Unlock()
-	s.breakCh = c
-}
-
-func (s *serverSession) SessionRequestType() string {
-	return s.requestType
-}
-
-func (s *serverSession) AgentForward() backend.AgentForward {
+func (s *serverSession) AgentForwardSocket() string {
 	if s.agentForward == nil {
-		return nil
+		return ""
 	}
-	return s.agentForward.forward
+	return s.agentForward.forward.SocketPath()
 }
 
-func (s *serverSession) handleRequests(reqs <-chan *cryptossh.Request) {
+func (s *serverSession) handleRequests(requests <-chan *cryptossh.Request) {
+	stop := context.AfterFunc(s.ctx, func() { _ = s.Channel.Close() })
 	defer func() {
-		s.closeAgentForward()
+		s.cancel()
+		_ = s.Channel.Close()
+		stop()
 		if s.winch != nil {
 			close(s.winch)
 		}
+		if s.agentForward != nil {
+			s.agentForward.Close()
+		}
+		s.tasks.Wait()
 	}()
-	for req := range reqs {
-		switch req.Type {
-		case sshprotocol.RequestShell, sshprotocol.RequestExec:
-			s.handleShellOrExecRequest(req)
-		case sshprotocol.RequestSubsystem:
-			s.handleSubsystemRequest(req)
-		case sshprotocol.RequestEnvironment:
-			s.handleEnvRequest(req)
-		case sshprotocol.RequestSignal:
-			s.handleSignalRequest(req)
-		case sshprotocol.RequestPTY:
-			s.handlePTYRequest(req)
-		case sshprotocol.RequestWindowChange:
-			s.handleWindowChangeRequest(req)
-		case sshprotocol.RequestAgentForward:
-			s.handleAgentForwardRequest(req)
-		case sshprotocol.RequestBreak:
-			s.handleBreakRequest(req)
-		default:
-			_ = req.Reply(false, nil)
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case request, ok := <-requests:
+			if !ok {
+				return
+			}
+			switch request.Type {
+			case sshprotocol.RequestShell, sshprotocol.RequestExec, sshprotocol.RequestSubsystem:
+				s.handleStartRequest(request)
+			case sshprotocol.RequestEnvironment:
+				s.handleEnvRequest(request)
+			case sshprotocol.RequestPTY:
+				s.handlePTYRequest(request)
+			case sshprotocol.RequestWindowChange:
+				s.handleWindowChangeRequest(request)
+			case sshprotocol.RequestAgentForward:
+				s.handleAgentForwardRequest(request)
+			default:
+				// The Pod backend has no signal/break operation.
+				_ = request.Reply(false, nil)
+			}
 		}
 	}
 }
 
-func (s *serverSession) handleShellOrExecRequest(req *cryptossh.Request) {
-	if s.handled {
-		_ = req.Reply(false, nil)
+func (s *serverSession) handleStartRequest(request *cryptossh.Request) {
+	if s.started {
+		_ = request.Reply(false, nil)
 		return
 	}
 	var payload struct{ Value string }
-	cryptossh.Unmarshal(req.Payload, &payload)
-	s.rawCmd = payload.Value
-	s.requestType = req.Type
-
-	s.handled = true
-	_ = req.Reply(true, nil)
-	go func() {
-		defer s.closeAgentForward()
-		s.protocol.handleSession(s)
-		_ = s.Exit(0)
-	}()
-}
-
-func (s *serverSession) handleSubsystemRequest(req *cryptossh.Request) {
-	if s.handled {
-		_ = req.Reply(false, nil)
+	handler := s.protocol.handleSession
+	switch request.Type {
+	case sshprotocol.RequestShell:
+		if len(request.Payload) != 0 {
+			_ = request.Reply(false, nil)
+			return
+		}
+	case sshprotocol.RequestExec, sshprotocol.RequestSubsystem:
+		if err := cryptossh.Unmarshal(request.Payload, &payload); err != nil {
+			_ = request.Reply(false, nil)
+			return
+		}
+		if request.Type == sshprotocol.RequestSubsystem {
+			if payload.Value != sshprotocol.SubsystemSFTP {
+				_ = request.Reply(false, nil)
+				return
+			}
+			handler = s.protocol.handleSFTP
+		}
+	}
+	s.requestType = request.Type
+	if request.Type == sshprotocol.RequestExec {
+		s.rawCmd = payload.Value
+	}
+	s.started = true
+	if err := request.Reply(true, nil); err != nil {
+		s.cancel()
 		return
 	}
-	var payload struct{ Value string }
-	cryptossh.Unmarshal(req.Payload, &payload)
-	s.subsystem = payload.Value
-	s.requestType = req.Type
-
-	if payload.Value != sshprotocol.SubsystemSFTP {
-		_ = req.Reply(false, nil)
-		return
-	}
-
-	s.handled = true
-	_ = req.Reply(true, nil)
-	go func() {
-		defer s.closeAgentForward()
-		s.protocol.handleSFTP(s)
-		_ = s.Exit(0)
-	}()
+	s.tasks.Go(func() { _ = s.Exit(handler(s)) })
 }
 
-func (s *serverSession) handleEnvRequest(req *cryptossh.Request) {
-	if s.handled {
-		_ = req.Reply(false, nil)
+func (s *serverSession) handleEnvRequest(request *cryptossh.Request) {
+	var payload struct{ Key, Value string }
+	if s.started || cryptossh.Unmarshal(request.Payload, &payload) != nil {
+		_ = request.Reply(false, nil)
 		return
 	}
-	var kv struct{ Key, Value string }
-	cryptossh.Unmarshal(req.Payload, &kv)
-	s.env = append(s.env, fmt.Sprintf("%s=%s", kv.Key, kv.Value))
-	_ = req.Reply(true, nil)
+	s.env = append(s.env, fmt.Sprintf("%s=%s", payload.Key, payload.Value))
+	_ = request.Reply(true, nil)
 }
 
-func (s *serverSession) handleSignalRequest(req *cryptossh.Request) {
-	var payload struct{ Signal string }
-	cryptossh.Unmarshal(req.Payload, &payload)
-	s.Lock()
-	if s.sigCh != nil {
-		s.sigCh <- gossh.Signal(payload.Signal)
-	} else if len(s.sigBuf) < maxSignalBufferSize {
-		s.sigBuf = append(s.sigBuf, gossh.Signal(payload.Signal))
-	}
-	s.Unlock()
-}
-
-func (s *serverSession) handlePTYRequest(req *cryptossh.Request) {
-	if s.handled || s.pty != nil {
-		_ = req.Reply(false, nil)
+func (s *serverSession) handlePTYRequest(request *cryptossh.Request) {
+	if s.started || s.pty != nil {
+		_ = request.Reply(false, nil)
 		return
 	}
-	ptyReq, ok := parseSessionPTYRequest(req.Payload)
+	pty, ok := parseSessionPTYRequest(request.Payload)
 	if !ok {
-		_ = req.Reply(false, nil)
+		_ = request.Reply(false, nil)
 		return
 	}
-	s.pty = &ptyReq
-	s.winch = make(chan gossh.Window, 1)
-	s.winch <- ptyReq.Window
-	_ = req.Reply(true, nil)
+	s.pty = &pty
+	// The initial size comes from Pty; this queue contains only later changes.
+	s.winch = make(chan sshprotocol.Window, 1)
+	_ = request.Reply(true, nil)
 }
 
-func (s *serverSession) handleWindowChangeRequest(req *cryptossh.Request) {
+func (s *serverSession) handleWindowChangeRequest(request *cryptossh.Request) {
 	if s.pty == nil {
-		_ = req.Reply(false, nil)
+		_ = request.Reply(false, nil)
 		return
 	}
-	win, ok := parseSessionWindowChangeRequest(req.Payload)
+	window, ok := parseSessionWindowChangeRequest(request.Payload)
 	if ok {
-		s.pty.Window = win
-		s.winch <- win
+		// A resize describes current state. Replace a stale queued size so a slow
+		// backend cannot block other requests or session shutdown.
+		select {
+		case <-s.winch:
+		default:
+		}
+		s.winch <- window // one producer; draining above guarantees capacity
 	}
-	_ = req.Reply(ok, nil)
+	_ = request.Reply(ok, nil)
 }
 
-func (s *serverSession) handleAgentForwardRequest(req *cryptossh.Request) {
-	if s.handled || s.agentForward != nil {
-		_ = req.Reply(false, nil)
+func (s *serverSession) handleAgentForwardRequest(request *cryptossh.Request) {
+	if s.started || s.agentForward != nil || len(request.Payload) != 0 {
+		_ = request.Reply(false, nil)
 		return
 	}
-	forward, ok := s.protocol.acceptAgentForward(s.conn)
-	if !ok {
-		_ = req.Reply(false, nil)
-		return
+	forward, ok := s.protocol.acceptAgentForward(s.ctx, s.conn)
+	if ok {
+		s.agentForward = forward
 	}
-	s.agentForward = forward
-	_ = req.Reply(true, nil)
+	_ = request.Reply(ok, nil)
 }
 
-func (s *serverSession) handleBreakRequest(req *cryptossh.Request) {
-	ok := false
-	s.Lock()
-	if s.breakCh != nil {
-		s.breakCh <- true
-		ok = true
+func parseSessionPTYRequest(payload []byte) (sshprotocol.PTY, bool) {
+	var request struct {
+		Term                                   string
+		Width, Height, PixelWidth, PixelHeight uint32
+		Modes                                  string
 	}
-	_ = req.Reply(ok, nil)
-	s.Unlock()
+	if cryptossh.Unmarshal(payload, &request) != nil || request.Width > math.MaxUint16 || request.Height > math.MaxUint16 {
+		return sshprotocol.PTY{}, false
+	}
+	return sshprotocol.PTY{Term: request.Term, Window: sshprotocol.Window{Width: int(request.Width), Height: int(request.Height)}}, true
 }
 
-func (s *serverSession) closeAgentForward() {
-	if s.agentForward != nil {
-		s.agentForward.Close()
+func parseSessionWindowChangeRequest(payload []byte) (sshprotocol.Window, bool) {
+	var request struct{ Width, Height, PixelWidth, PixelHeight uint32 }
+	if cryptossh.Unmarshal(payload, &request) != nil || request.Width < 1 || request.Height < 1 || request.Width > math.MaxUint16 || request.Height > math.MaxUint16 {
+		return sshprotocol.Window{}, false
 	}
-}
-
-func parseSessionPTYRequest(payload []byte) (gossh.Pty, bool) {
-	term, rest, ok := parseSessionString(payload)
-	if !ok {
-		return gossh.Pty{}, false
-	}
-	width, rest, ok := parseSessionUint32(rest)
-	if !ok {
-		return gossh.Pty{}, false
-	}
-	height, _, ok := parseSessionUint32(rest)
-	if !ok {
-		return gossh.Pty{}, false
-	}
-	return gossh.Pty{
-		Term: term,
-		Window: gossh.Window{
-			Width:  int(width),
-			Height: int(height),
-		},
-	}, true
-}
-
-func parseSessionWindowChangeRequest(payload []byte) (gossh.Window, bool) {
-	width, rest, ok := parseSessionUint32(payload)
-	if !ok || width < 1 {
-		return gossh.Window{}, false
-	}
-	height, _, ok := parseSessionUint32(rest)
-	if !ok || height < 1 {
-		return gossh.Window{}, false
-	}
-	return gossh.Window{Width: int(width), Height: int(height)}, true
-}
-
-func parseSessionString(in []byte) (string, []byte, bool) {
-	if len(in) < 4 {
-		return "", nil, false
-	}
-	length := binary.BigEndian.Uint32(in)
-	if uint32(len(in)) < 4+length {
-		return "", nil, false
-	}
-	return string(in[4 : 4+length]), in[4+length:], true
-}
-
-func parseSessionUint32(in []byte) (uint32, []byte, bool) {
-	if len(in) < 4 {
-		return 0, nil, false
-	}
-	return binary.BigEndian.Uint32(in), in[4:], true
-}
-
-func (p *Protocol) handleSFTP(session gossh.Session) {
-	operation := sshprotocol.Operation{ChannelType: sshprotocol.ChannelSession, RequestType: sshprotocol.RequestSubsystem, Subsystem: sshprotocol.SubsystemSFTP}
-	p.handleStreamOperation(session, operation, func(sc *sessionContext) (int, error) {
-		return p.backend.SFTP(sc.ctx, backend.StreamRequest{
-			Target: sc.target,
-			Stdin:  sc.session,
-			Stdout: sc.session,
-			Stderr: sc.session.Stderr(),
-		})
-	})
+	return sshprotocol.Window{Width: int(request.Width), Height: int(request.Height)}, true
 }

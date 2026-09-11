@@ -14,11 +14,6 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/sshprotocol"
 )
 
-type agentForwardSession interface {
-	// AgentForward returns the session's active agent forward, or nil if disabled.
-	AgentForward() backend.AgentForward
-}
-
 type sessionAgentForward struct {
 	forward backend.AgentForward
 	finish  sshprotocol.FinishOperation
@@ -28,29 +23,29 @@ type sessionAgentForward struct {
 	closing   atomic.Bool
 }
 
-func (p *Protocol) acceptAgentForward(conn cryptossh.Conn) (*sessionAgentForward, bool) {
+func (p *Protocol) acceptAgentForward(ctx context.Context, conn cryptossh.Conn) (*sessionAgentForward, bool) {
 	operation := sshprotocol.Operation{ChannelType: sshprotocol.ChannelSession, RequestType: sshprotocol.RequestAgentForward}
 	finish, err := p.begin(operation)
 	if err != nil {
 		if finish != nil {
 			finish(sshprotocol.OperationResult{})
 		}
-		slog.WarnContext(p.ctx, "agent forwarding denied", "reason", err)
+		slog.WarnContext(ctx, "agent forwarding denied", "reason", err)
 		return nil, false
 	}
-	forward, err := p.backend.AgentForward(p.ctx, backend.AgentForwardRequest{Target: p.target})
+	forward, err := p.backend.AgentForward(ctx, backend.AgentForwardRequest{Target: p.target})
 	if err != nil {
 		finish(sshprotocol.OperationResult{Err: err})
-		slog.ErrorContext(p.ctx, "agent forwarding failed", "err", err)
+		slog.ErrorContext(ctx, "agent forwarding failed", "err", err)
 		return nil, false
 	}
 
 	state := &sessionAgentForward{forward: forward, finish: finish, done: make(chan struct{})}
-	go p.serveAgentForward(conn, state)
+	go p.serveAgentForward(ctx, conn, state)
 	return state, true
 }
 
-func (p *Protocol) serveAgentForward(conn cryptossh.Conn, state *sessionAgentForward) {
+func (p *Protocol) serveAgentForward(ctx context.Context, conn cryptossh.Conn, state *sessionAgentForward) {
 	var result sshprotocol.OperationResult
 	defer func() {
 		state.finish(result)
@@ -58,29 +53,29 @@ func (p *Protocol) serveAgentForward(conn cryptossh.Conn, state *sessionAgentFor
 	}()
 
 	for {
-		stream, err := state.forward.Accept(p.ctx)
+		stream, err := state.forward.Accept(ctx)
 		if err != nil {
-			if state.closing.Load() || p.ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			if state.closing.Load() || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return
 			}
 			result.Err = err
-			slog.ErrorContext(p.ctx, "agent forwarding accept failed", "err", err)
+			slog.ErrorContext(ctx, "agent forwarding accept failed", "err", err)
 			return
 		}
-		go p.proxyAgentForwardConnection(conn, stream)
+		go p.proxyAgentForwardConnection(ctx, conn, stream)
 	}
 }
 
-func (p *Protocol) proxyAgentForwardConnection(conn cryptossh.Conn, stream ioproxy.HalfCloser) {
+func (p *Protocol) proxyAgentForwardConnection(ctx context.Context, conn cryptossh.Conn, stream ioproxy.HalfCloser) {
 	channel, requests, err := conn.OpenChannel(sshprotocol.ChannelAgent, nil)
 	if err != nil {
 		_ = stream.Close()
-		slog.WarnContext(p.ctx, "open auth-agent channel failed", "err", err)
+		slog.WarnContext(ctx, "open auth-agent channel failed", "err", err)
 		return
 	}
 	go cryptossh.DiscardRequests(requests)
 	_ = ioproxy.ProxyWithObserver(
-		p.ctx,
+		ctx,
 		channel,
 		stream,
 		p.metrics,

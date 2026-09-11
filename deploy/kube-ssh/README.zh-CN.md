@@ -37,6 +37,28 @@ Access 中的 `spec.gatewayClassName` 必须与网关类名完全一致。同一
 
 Service 默认为 `NodePort`，端口为 `30022`。可根据集群网络环境选择 `ClusterIP`、`NodePort` 或 `LoadBalancer`。`advertiseAddresses` 应填写用户实际访问的地址，而不是仅在集群内部可用的 Service 地址。
 
+## 高级配置
+
+Chart 只负责 Kubernetes 入口、Host Key 和 Access/SAR 集成。认证方式、会话策略、
+Webhook、metrics 路径及上游 SSH 超时沿用程序默认值，需要修改时使用 `kubeSsh.extraArgs`：
+
+```yaml
+kubeSsh:
+  extraArgs:
+    - --authentication-method=publickey
+    - --policy-default-idle-timeout=15m
+```
+
+网关默认允许 `publickey` 和 `password`，每个 Access 再根据入站凭据类型（包含
+Secret 引用）收窄可用方式。只有公钥的 Access 不会提示输入密码，登录仍需匹配有效凭据。
+
+升级时，将原 `authentication`、`authorization`、`policy`、`accessPolicy`、`helper`、
+`externalSSH` 和 `metrics.path` 中的自定义配置迁移到命令行参数。敏感值通过
+`extraEnvVars` 的 `secretKeyRef` 或 `extraEnvVarsSecret` 注入；文件通过
+`extraVolumes` / `extraVolumeMounts` 挂载。命令行参数优先于环境变量。
+Chart 启用 Access 和 Kubernetes SAR，并关闭 allow-all；这些是部署所需的默认差异。
+节点组件的高级参数使用 `kubeSsh.node.extraArgs`。
+
 ## SSH 主机密钥
 
 Chart 会自动生成 Ed25519 主机密钥并保存到 Secret，Pod 重启和升级不会改变 SSH 指纹。如需复用统一管理的密钥，可设置 `kubeSsh.hostKey.existingSecret`；Secret 中必须包含 `kubeSsh.hostKey.secretKey` 指定的键。运维也可以通过 `kubeSsh.hostKey.privateKey` 直接传入私钥。优先级依次为 `existingSecret`、`privateKey`、自动生成。设置 `kubeSsh.hostKey.autoGenerate=false` 可禁用主机密钥管理，由网关使用临时密钥。静态 `deploy/install.yaml` 会主动使用该配置，避免向所有用户分发同一私钥。

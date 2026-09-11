@@ -145,6 +145,22 @@ Pod SSH 或 SSH Proxy adapter；后续 channel、global request 和连接关闭
 Kubernetes exec/CRI 分支。两个 adapter 通过同一 operation lifecycle seam 请求网关
 授权并完成审计/metrics，不依赖 `gateway` 实现类型或 handler。
 
+Pod 的 exec、SCP、SFTP 执行层依赖 `sshprotocol.ServerSession`，通过该接口
+读取命令、环境变量、PTY 和 agent socket，使用会话流并返回退出状态。
+具体 `podssh.serverSession` 负责 SSH request 解析与 channel 清理；共享接口
+不依赖 Pod backend，也不暴露 request 分派和锁等实现细节。
+
+每个 session 从连接 context 派生独立的取消作用域。请求循环负责配置并启动
+一次执行任务，通过 `WaitGroup.Go` 管理任务；执行层共用授权和结果处理入口，
+由 session owner 发送一次退出状态。session 结束时取消 backend 执行、关闭
+窗口队列和 agent socket，并等待执行任务返回，不取消同连接的其他 session。
+请求使用完整结构化解码，异常 payload 被拒绝；窗口队列仅保留最新尺寸，
+不会阻塞请求循环。Pod backend 未提供 signal/break 能力，对这类请求返回失败。
+
+网关一次性发布认证身份、目标和协议，操作与审计读取同一状态快照。
+连接 owner 负责取消、关闭 transport、回收协议并等待 channel handler 结束，
+最后记录 `connection.end`；审计不再绑定底层 `net.Conn.Close` 回调。
+
 ### Node 数据面
 
 高流量场景可将 Pod transport 切换为严格的 CRI 模式：Gateway 根据已解析 Pod
@@ -424,6 +440,17 @@ Authenticate(ctx, request) -> identity, result
 ```
 
 基础能力：Password authentication、Public key authentication。
+
+网关 `authentication.methods` 默认允许 `publickey` 和 `password`。对 Access
+登录，根据当前 Access 的入站 `credentials`（含 Secret 引用）推导方式，再与
+网关允许列表取交集；其他 Access 的凭据不会扩充这个列表。空交集拒绝连接。
+直接 Pod 登录沿用网关配置的静态凭据和 Webhook provider。
+
+客户端先发送 `none` 查询认证方式。`NoClientAuthCallback` 通过
+`PartialSuccessError.Next` 返回本连接允许的回调，不返回登录成功。
+这沿用 x/crypto 的动态认证机制；跳过初始 `none` 的客户端会被拒绝。
+公钥试探仅匹配候选身份，候选结果随 `Permissions` 进入 x/crypto 的公钥缓存；
+签名通过后才进行目标和会话策略检查，握手完成后才发布连接成功事件。
 
 可选增强：OpenSSH certificate、Keyboard-interactive（MFA/审批）、OIDC 签发短期 SSH certificate、企业 IdP。
 
@@ -881,8 +908,9 @@ examples/
 
 ## 实现技术栈
 
-- SSH server：`gliderlabs/ssh` 提供 server 生命周期和认证回调，结合
-  `golang.org/x/crypto/ssh` 实现自定义 channel/request 状态机。
+- SSH server：直接使用原版 `golang.org/x/crypto/ssh` 处理握手和协议，网关管理
+  listener、连接取消、认证协商及 channel/request 分发。Pod adapter 实现会话，
+  SSH Proxy adapter 转发上游协议；连接业务状态使用明确的结构体。
 - Kubernetes client：`client-go`，exec 使用 `k8s.io/client-go/tools/remotecommand`，portforward 使用 `k8s.io/client-go/tools/portforward`。
 - CRD runtime：generated clientset/lister 和 `client-go` shared informer，凭据
   匹配使用 informer index，status controller 使用 rate-limiting workqueue。

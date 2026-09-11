@@ -114,23 +114,6 @@ func TestSessionPolicyConnWriteRefreshesIdleDeadline(t *testing.T) {
 	}
 }
 
-func TestCloseNotifyConnCallbackRunsOnce(t *testing.T) {
-	serverSide, clientSide := net.Pipe()
-	defer clientSide.Close()
-	calls := 0
-	conn := newCloseNotifyConn(serverSide, func() { calls++ })
-
-	if err := conn.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("second Close() error = %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("close callback calls = %d, want 1", calls)
-	}
-}
-
 func BenchmarkSessionPolicyConnTouch(b *testing.B) {
 	conn := newSessionPolicyConn(benchmarkConn{}, effectiveSessionPolicy{IdleTimeout: time.Minute})
 	defer conn.Close()

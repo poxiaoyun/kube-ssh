@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sshv1 "xiaoshiai.cn/kube-ssh/apis/ssh/v1"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
+	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 )
 
 func TestBuildAccessSessionPolicy(t *testing.T) {
@@ -128,7 +129,7 @@ func TestBuildAccessSessionPolicyZeroDurationCannotDisableGlobal(t *testing.T) {
 func TestResolveSessionPolicyRejectsShellOutsideLimit(t *testing.T) {
 	opts := NewDefaultOptions()
 	opts.Policy.Limits.Shells = []string{"/bin/sh"}
-	s := &gateway{opts: opts, accessPolicy: fakeAccessPolicyGetter{access: &sshv1.Access{
+	s := &gateway{metrics: metrics.NopRecorder{}, opts: opts, accessPolicy: fakeAccessPolicyGetter{access: &sshv1.Access{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "notebook"},
 		Spec:       sshv1.AccessSpec{Session: &sshv1.SessionPolicy{DefaultShell: "/bin/bash"}},
 	}}}

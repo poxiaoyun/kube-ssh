@@ -412,6 +412,26 @@ template and the Access target base `username`. Append `~pod` or
 > Public key authentication is recommended. Password authentication treats the
 > password as an opaque bearer token and is not recommended.
 
+The gateway enables both `publickey` and `password` SSH methods by default.
+Use `--authentication-method=publickey` (or `AUTHENTICATION_METHOD=publickey`)
+to allow only public key authentication and prevent password fallback. Repeat
+the flag to enable multiple methods; the environment variable takes a
+space-separated list. For an Access login, the gateway advertises the intersection
+of this list and the credential types configured in that Access's `credentials`,
+including Secret references. An Access with only public keys never advertises
+password authentication, even when the gateway enables both. An empty
+intersection rejects the connection. Direct Pod logins retain the gateway's
+static/webhook providers. Empty or unsupported gateway method lists are rejected
+at startup. A failed public key does not prevent trying another key.
+
+Clients first send `none` to discover authentication methods. The gateway uses
+x/crypto's `NoClientAuthCallback` and `PartialSuccessError.Next` to select the
+methods; this phase never grants access. OpenSSH may log `none` with partial
+success before performing real authentication. Clients that skip the initial
+`none` request are rejected. Public key probes only match a candidate identity;
+target setup follows signature verification, and connection success is recorded
+only after the handshake completes.
+
 Static or webhook authentication can also target a Pod directly:
 
 ```bash

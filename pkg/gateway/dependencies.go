@@ -76,9 +76,6 @@ func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error)
 	if err := ctx.Err(); err != nil {
 		return Dependencies{}, err
 	}
-	if err := validatePolicyOptions(opts); err != nil {
-		return Dependencies{}, err
-	}
 	restConfig, err := loadKubernetesConfig(opts.Kubeconfig)
 	if err != nil {
 		return Dependencies{}, fmt.Errorf("load kubernetes config: %w", err)
@@ -136,9 +133,6 @@ func buildDependencies(ctx context.Context, opts *Options) (Dependencies, error)
 }
 
 func validatePolicyOptions(opts *Options) error {
-	if opts == nil {
-		return fmt.Errorf("options are required")
-	}
 	if opts.GatewayClassName != "" {
 		if problems := validation.IsDNS1123Subdomain(opts.GatewayClassName); len(problems) > 0 {
 			return fmt.Errorf("gateway class name %q is invalid: %s", opts.GatewayClassName, strings.Join(problems, ", "))
@@ -302,7 +296,7 @@ func withPolicyGuards(opts *Options, next authz.Authorizer) (authz.Authorizer, e
 }
 
 func buildMetrics(opts *Options) metrics.Recorder {
-	if opts == nil || opts.Metrics.ListenAddress == "" {
+	if opts.Metrics.ListenAddress == "" {
 		return metrics.NopRecorder{}
 	}
 	info := version.Get()

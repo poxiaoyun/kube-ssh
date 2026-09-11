@@ -46,12 +46,13 @@ spec:
             {{- range .Values.kubeSsh.node.runtimeEndpoints }}
             - --runtime-endpoint={{ . }}
             {{- end }}
-            - --helper-path={{ .Values.kubeSsh.helper.path }}
-            - --helper-remote-dir={{ .Values.kubeSsh.helper.remoteDir }}
             - --tls-ca-file=/etc/kube-ssh/node-tls/ca.crt
             - --tls-cert-file=/etc/kube-ssh/node-tls/tls.crt
             - --tls-key-file=/etc/kube-ssh/node-tls/tls.key
             - --tls-client-name={{ .Values.kubeSsh.node.expectedClientName }}
+            {{- with .Values.kubeSsh.node.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: stream
               containerPort: {{ .Values.kubeSsh.managed.cri.port }}

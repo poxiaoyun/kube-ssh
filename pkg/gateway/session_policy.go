@@ -23,9 +23,6 @@ type effectiveSessionPolicy struct {
 }
 
 func buildGlobalSessionPolicy(opts *Options) effectiveSessionPolicy {
-	if opts == nil {
-		opts = NewDefaultOptions()
-	}
 	return effectiveSessionPolicy{
 		DefaultShell:        opts.Policy.Defaults.DefaultShell,
 		globalEnvAllowlist:  append([]string(nil), opts.Policy.Limits.EnvAllowlist...),
@@ -118,9 +115,6 @@ func (s *gateway) resolveSessionPolicy(ctx context.Context, sshUser string, info
 		return effectiveSessionPolicy{}, err
 	}
 	opts := s.opts
-	if opts == nil {
-		opts = NewDefaultOptions()
-	}
 	policy := buildAccessSessionPolicy(opts, access)
 	if !stringAllowed(opts.Policy.Limits.Shells, policy.DefaultShell) {
 		return effectiveSessionPolicy{}, fmt.Errorf("shell %q exceeds global policy limits", policy.DefaultShell)
@@ -133,7 +127,7 @@ func stringAllowed(patterns []string, value string) bool {
 }
 
 func (s *gateway) sessionPolicyAccess(ctx context.Context, sshUser string, infoExtra map[string][]string) (*sshv1.Access, error) {
-	if s == nil || s.accessPolicy == nil {
+	if s.accessPolicy == nil {
 		return nil, nil
 	}
 	namespace := firstExtraValue(infoExtra, accesspolicy.ExtraAccessNamespace)

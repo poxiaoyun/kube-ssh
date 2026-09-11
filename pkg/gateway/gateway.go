@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	gossh "github.com/gliderlabs/ssh"
-	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
@@ -20,11 +18,12 @@ import (
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
 	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend"
-	"xiaoshiai.cn/kube-ssh/pkg/sshprotocol"
 	"xiaoshiai.cn/kube-ssh/pkg/sshproxy"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
+// RunWithDependencies supplies the required collaborators and defaults once.
+// AccessPolicy and target-specific adapters remain optional.
 type gateway struct {
 	opts         *Options
 	authn        authn.SSHAuthenticator
@@ -55,6 +54,19 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 	if opts == nil {
 		opts = NewDefaultOptions()
 	}
+	if deps.Stop != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := deps.Stop(shutdownCtx); err != nil {
+				slog.Error("stop dependencies", "err", err)
+			}
+		}()
+	}
+	methods, err := enabledAuthenticationMethods(opts.Authentication.Methods)
+	if err != nil {
+		return err
+	}
 	if err := deps.Validate(); err != nil {
 		return fmt.Errorf("invalid dependencies: %w", err)
 	}
@@ -71,15 +83,7 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 	if deps.Metrics == nil {
 		deps.Metrics = metrics.NopRecorder{}
 	}
-	if deps.Stop != nil {
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := deps.Stop(shutdownCtx); err != nil {
-				slog.Error("stop dependencies", "err", err)
-			}
-		}()
-	}
+
 	if deps.Start != nil {
 		if err := deps.Start(ctx); err != nil {
 			return fmt.Errorf("start dependencies: %w", err)
@@ -96,34 +100,15 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 		podBackend:   deps.PodBackend,
 		sshProxy:     deps.SSHProxy,
 	}
-	connectionFeatures := s.connectionFeatures()
-
-	srv := &gossh.Server{
-		Addr: s.opts.ListenAddress,
-		ConnCallback: func(ctx gossh.Context, conn net.Conn) net.Conn {
-			return applyConnectionFeatures(ctx, conn, connectionFeatures...)
-		},
-		PublicKeyHandler: s.handlePublicKey,
-		PasswordHandler:  s.handlePassword,
-		ChannelHandlers: map[string]gossh.ChannelHandler{
-			sshprotocol.ChannelSession:     s.acceptChannel,
-			sshprotocol.ChannelDirectTCPIP: s.acceptChannel,
-			"default":                      s.acceptChannel,
-		},
-		RequestHandlers: map[string]gossh.RequestHandler{
-			sshprotocol.RequestTCPIPForward:       s.forwardGlobalRequest,
-			sshprotocol.RequestCancelTCPIPForward: s.forwardGlobalRequest,
-			"default":                             s.forwardGlobalRequest,
-		},
+	signer, err := loadHostKey(opts.HostKeyFile)
+	if err != nil {
+		return err
 	}
-
-	if s.opts.HostKeyFile != "" {
-		if err := srv.SetOption(gossh.HostKeyFile(s.opts.HostKeyFile)); err != nil {
-			return err
-		}
-	} else {
-		slog.Warn("no host-key-file configured; ssh server will generate an ephemeral host key")
+	listener, err := net.Listen("tcp", opts.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen SSH: %w", err)
 	}
+	defer listener.Close()
 
 	slog.InfoContext(ctx, "kube-ssh listening", "addr", s.opts.ListenAddress)
 
@@ -134,7 +119,7 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
-		err := srv.ListenAndServe()
+		err := s.serveSSH(groupCtx, listener, signer, methods)
 		if groupCtx.Err() != nil {
 			return nil
 		}
@@ -153,7 +138,7 @@ func RunWithDependencies(ctx context.Context, opts *Options, deps Dependencies) 
 	// tears down the other listener instead of leaving a background goroutine.
 	group.Go(func() error {
 		<-groupCtx.Done()
-		_ = srv.Close()
+		_ = listener.Close()
 		shutdownHTTPServer(metricsSrv)
 		return nil
 	})
@@ -214,52 +199,7 @@ func shutdownHTTPServer(srv *http.Server) {
 	_ = srv.Shutdown(ctx)
 }
 
-func (s *gateway) metricsRecorder() metrics.Recorder {
-	if s == nil || s.metrics == nil {
-		return metrics.NopRecorder{}
-	}
-	return s.metrics
-}
-
-func (s *gateway) handlePublicKey(ctx gossh.Context, key gossh.PublicKey) bool {
-	fingerprint := cryptossh.FingerprintSHA256(key)
-	info, err := s.authn.AuthenticatePublicKey(ctx, ctx.User(), key)
-	if err != nil {
-		s.recordAuthentication(ctx, metrics.CredentialPublicKey, fingerprint, metrics.ResultRejected, nil, err)
-		s.metricsRecorder().
-			AuthAttempt(metrics.CredentialPublicKey, metrics.ResultRejected)
-		slog.WarnContext(ctx, "public key rejected",
-			"fingerprint", fingerprint,
-			"user", ctx.User(),
-			"remote", ctx.RemoteAddr().
-				String(),
-			"err", err,
-		)
-		return false
-	}
-	s.recordAuthentication(ctx, metrics.CredentialPublicKey, fingerprint, metrics.ResultSuccess, info, nil)
-	return s.acceptAuthenticated(ctx, info, fingerprint, metrics.CredentialPublicKey)
-}
-
-func (s *gateway) handlePassword(ctx gossh.Context, password string) bool {
-	info, err := s.authn.AuthenticateBasic(ctx, ctx.User(), password)
-	if err != nil {
-		s.recordAuthentication(ctx, metrics.CredentialPassword, "", metrics.ResultRejected, nil, err)
-		s.metricsRecorder().
-			AuthAttempt(metrics.CredentialPassword, metrics.ResultRejected)
-		slog.WarnContext(ctx, "password rejected",
-			"user", ctx.User(),
-			"remote", ctx.RemoteAddr().
-				String(),
-			"err", err,
-		)
-		return false
-	}
-	s.recordAuthentication(ctx, metrics.CredentialPassword, "", metrics.ResultSuccess, info, nil)
-	return s.acceptAuthenticated(ctx, info, "", metrics.CredentialPassword)
-}
-
-func (s *gateway) acceptAuthenticated(ctx gossh.Context, info *authn.AuthenticateInfo, publicKeyFingerprint, credential string) bool {
+func (s *gateway) acceptAuthenticated(ctx *connectionState, info *authn.AuthenticateInfo, publicKeyFingerprint, credential string) bool {
 	tgt, err := s.resolver.Resolve(ctx, target.ResolveInput{
 		SSHUser:   ctx.User(),
 		UserName:  info.User.Name,
@@ -268,12 +208,12 @@ func (s *gateway) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticat
 		Hints:     info.TargetHints,
 	})
 	if err != nil {
-		event := s.connectionEvent(ctx, connectionAuditFromContext(ctx), "target_resolution.result")
+		event := s.connectionEvent(ctx, "target_resolution.result")
 		event.Actor = auditActor(*info, publicKeyFingerprint)
 		event.Access = auditAccess(*info)
 		event.Outcome = &audit.Outcome{Result: metrics.ResultRejected, Error: err.Error()}
 		s.audit.Record(ctx, event)
-		s.metricsRecorder().
+		s.metrics.
 			AuthAttempt(credential, "target_rejected")
 		slog.WarnContext(ctx, "target resolution failed",
 			"user", ctx.User(),
@@ -281,7 +221,7 @@ func (s *gateway) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticat
 		)
 		return false
 	}
-	targetEvent := s.connectionEvent(ctx, connectionAuditFromContext(ctx), "target_resolution.result")
+	targetEvent := s.connectionEvent(ctx, "target_resolution.result")
 	targetEvent.Actor = auditActor(*info, publicKeyFingerprint)
 	targetEvent.Target = auditTarget(tgt)
 	targetEvent.Access = auditAccess(*info)
@@ -290,7 +230,7 @@ func (s *gateway) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticat
 
 	policy, err := s.resolveSessionPolicy(ctx, ctx.User(), info.Extra)
 	if err != nil {
-		s.metricsRecorder().
+		s.metrics.
 			AuthAttempt(credential, "session_policy_rejected")
 		slog.WarnContext(ctx, "session policy resolution failed",
 			"user", ctx.User(),
@@ -298,12 +238,10 @@ func (s *gateway) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticat
 		)
 		return false
 	}
-	if sessionPolicyConn, ok := sessionPolicyConnFromContext(ctx); ok {
-		sessionPolicyConn.ApplyPolicy(policy)
-	}
+	ctx.policyConn.ApplyPolicy(policy)
 	protocol, err := s.selectConnectionProtocol(ctx, tgt, policy)
 	if err != nil {
-		s.metricsRecorder().
+		s.metrics.
 			AuthAttempt(credential, "protocol_rejected")
 		slog.WarnContext(ctx, "SSH protocol selection failed",
 			"user", ctx.User(),
@@ -313,33 +251,21 @@ func (s *gateway) acceptAuthenticated(ctx gossh.Context, info *authn.Authenticat
 		return false
 	}
 
-	withAuthenticate(ctx, *info)
-	withTarget(ctx, tgt)
-	withConnectionProtocol(ctx, protocol)
-	withAuditFingerprint(ctx, publicKeyFingerprint)
-	if state := connectionAuditFromContext(ctx); state != nil {
-		ready := s.connectionEvent(ctx, state, "connection.ready")
-		ready.Outcome = &audit.Outcome{Result: metrics.ResultSuccess}
-		s.audit.Record(ctx, ready)
-	}
-	recorder := s.metricsRecorder()
-	recorder.AuthAttempt(credential, metrics.ResultSuccess)
-	recorder.ConnectionOpened(info.Method)
-	go func() {
-		<-ctx.Done()
-		protocol.Close()
-		recorder.ConnectionClosed(info.Method)
-	}()
-
-	slog.InfoContext(ctx, "authenticated",
-		"user", info.User.Name,
-		"method", info.Method,
-		"kind", tgt.Kind,
-		"target", tgt.String(),
-		"remote", ctx.RemoteAddr().
-			String(),
-	)
+	ctx.publishAuthenticated(authenticatedConnection{info: *info, target: tgt, protocol: protocol, fingerprint: publicKeyFingerprint})
 	return true
+}
+
+// connectionEstablished publishes success only after the SSH handshake completes.
+func (s *gateway) connectionEstablished(ctx *connectionState, credential string) {
+	ctx.markEstablished()
+	result := ctx.snapshot().authenticated
+	info, tgt := result.info, result.target
+	ready := s.connectionEvent(ctx, "connection.ready")
+	ready.Outcome = &audit.Outcome{Result: metrics.ResultSuccess}
+	s.audit.Record(ctx, ready)
+	s.metrics.AuthAttempt(credential, metrics.ResultSuccess)
+	s.metrics.ConnectionOpened(info.Method)
+	slog.InfoContext(ctx, "authenticated", "user", info.User.Name, "method", info.Method, "kind", tgt.Kind, "target", tgt.String(), "remote", ctx.RemoteAddr().String())
 }
 
 func remoteHost(addr net.Addr) string {

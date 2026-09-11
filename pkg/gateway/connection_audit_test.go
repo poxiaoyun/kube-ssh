@@ -3,69 +3,64 @@ package gateway
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
-	gossh "github.com/gliderlabs/ssh"
 	cryptossh "golang.org/x/crypto/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/accesspolicy"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
+	"xiaoshiai.cn/kube-ssh/pkg/metrics"
 	"xiaoshiai.cn/kube-ssh/pkg/podssh/backend"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
-func TestConnectionFeaturesReportPolicyTimeout(t *testing.T) {
+func TestConnectionPolicyTimeoutRecordsEnd(t *testing.T) {
 	recorder := &eventRecorder{}
-	server := &gateway{opts: NewDefaultOptions(), audit: recorder}
-	sshCtx := newTestSSHContext()
+	opts := NewDefaultOptions()
+	opts.Policy.Defaults.MaxDuration = 20 * time.Millisecond
+	server := &gateway{metrics: metrics.NopRecorder{}, opts: opts, audit: recorder}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	serverSide, clientSide := net.Pipe()
 	defer clientSide.Close()
-
-	conn := applyConnectionFeatures(sshCtx, serverSide, server.connectionFeatures()...)
-	policyConn, ok := sessionPolicyConnFromContext(sshCtx)
-	if !ok {
-		t.Fatal("session policy connection was not installed")
+	signer := authenticationTestSigner(t)
+	done := make(chan struct{})
+	go func() { defer close(done); server.handleConnection(ctx, serverSide, signer, []string{"publickey"}) }()
+	clientSide.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadAll(clientSide); err != nil {
+		t.Fatalf("policy timeout did not close transport: %v", err)
 	}
-	policyConn.ApplyPolicy(effectiveSessionPolicy{MaxDuration: 20 * time.Millisecond})
-
-	deadline := time.Now().
-		Add(time.Second)
-	for len(recorder.Events()) < 2 && time.Now().
-		Before(deadline) {
-		time.Sleep(time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("connection cleanup did not finish")
 	}
-	events := recorder.Events()
-	if len(events) < 2 {
-		_ = conn.Close()
-		t.Fatalf("policy timeout did not close the connection; events = %+v", events)
-	}
-	_ = conn.Close()
-	if len(events) != 2 || events[0].Type != "connection.start" || events[1].Type != "connection.end" {
-		t.Fatalf("events = %+v, want connection start and end", events)
+	if got := auditTypes(recorder.Events()); !reflect.DeepEqual(got, []string{"connection.start", "connection.end"}) {
+		t.Fatalf("events = %v", got)
 	}
 }
 
 func TestConnectionAuditLifecycle(t *testing.T) {
 	recorder := &eventRecorder{}
-	server := &gateway{audit: recorder}
+	server := &gateway{metrics: metrics.NopRecorder{}, audit: recorder}
 	base, cancel := context.WithCancel(context.Background())
 	sshCtx := newTestSSHContext()
 	sshCtx.Context = base
-	sshCtx.SetValue(gossh.ContextKeyUser, "default.nginx.app")
-	sshCtx.SetValue(gossh.ContextKeyClientVersion, "SSH-2.0-test")
-	sshCtx.SetValue(gossh.ContextKeyRemoteAddr, testAddr("client:2222"))
+	sshCtx.metadata.user = "default.nginx.app"
+	sshCtx.metadata.clientVersion = "SSH-2.0-test"
+	sshCtx.metadata.remote = testAddr("client:2222")
 
-	finish := server.startConnectionAudit(sshCtx, nil)
+	finish := server.startConnectionAudit(sshCtx)
 	info := authn.AuthenticateInfo{User: authn.UserInfo{ID: "42", Name: "alice", Groups: []string{"dev"}}, Method: "publickey"}
 	server.recordAuthentication(sshCtx, "publickey", "SHA256:test", "success", &info, nil)
-	withAuthenticate(sshCtx, info)
-	withTarget(sshCtx, targetFixturePtr())
-	withAuditFingerprint(sshCtx, "SHA256:test")
+	sshCtx.publishAuthenticated(authenticatedConnection{info: info, target: targetFixturePtr(), fingerprint: "SHA256:test"})
+	sshCtx.markEstablished()
 	finish()
 	cancel()
 	events := recorder.Events()
@@ -90,19 +85,21 @@ func TestConnectionAuditLifecycle(t *testing.T) {
 func TestOperationAuditLifecycleAndCorrelation(t *testing.T) {
 	recorder := &eventRecorder{}
 	server := &gateway{
-		audit: recorder,
+		metrics: metrics.NopRecorder{},
+		audit:   recorder,
 		authz: authz.AuthorizerFunc(func(context.Context, authz.Request) (authz.Decision, string, error) {
 			return authz.DecisionAllow, "policy matched", nil
 		}),
 	}
 	sshCtx := newTestSSHContext()
-	withConnectionAudit(sshCtx, &connectionAuditState{id: "connection-1"})
+	sshCtx.audit = &connectionAuditState{id: "connection-1"}
 	sc := &operationContext{
 		ctx:    sshCtx,
 		info:   authn.AuthenticateInfo{User: authn.UserInfo{ID: "42", Name: "alice", Groups: []string{"dev"}}, Method: "publickey"},
 		target: targetFixturePtr(),
 		audit:  audit.Event{Fields: map[string]string{}},
 	}
+	sshCtx.publishAuthenticated(authenticatedConnection{info: sc.info, target: sc.target})
 	spec := operationSpec{name: "session", capability: authz.CapabilityExec, auditFields: map[string]string{"command": "id"}}
 
 	finish := server.startOperation(sc, spec)
@@ -123,6 +120,9 @@ func TestOperationAuditLifecycleAndCorrelation(t *testing.T) {
 	}
 	if start.Correlation.ConnectionID != "connection-1" {
 		t.Fatalf("start correlation = %+v", start.Correlation)
+	}
+	if start.Actor == nil || end.Actor == nil || start.Actor.Name != "alice" || end.Actor.Name != "alice" {
+		t.Fatalf("operation actor changed: start=%+v end=%+v", start.Actor, end.Actor)
 	}
 	if start.Correlation.OperationID == "" || start.Correlation.OperationID != end.Correlation.OperationID {
 		t.Fatalf("operation IDs = %q, %q", start.Correlation.OperationID, end.Correlation.OperationID)
@@ -435,4 +435,57 @@ func assertSingleConnectionCorrelation(t *testing.T, events []audit.Event) {
 			t.Fatalf("event %q connection ID = %q, want %q", event.Type, event.Correlation.ConnectionID, want)
 		}
 	}
+}
+
+// The connection owner must wait for backend cleanup before its final audit.
+func TestConnectionEndWaitsForSessionCleanup(t *testing.T) {
+	recorder := &eventRecorder{}
+	executor := &cleanupAuditBackend{started: make(chan struct{}), canceled: make(chan struct{}), release: make(chan struct{})}
+	var release sync.Once
+	unblock := func() { release.Do(func() { close(executor.release) }) }
+	addr := startAuditIntegrationServer(t, auditIntegrationDependencies(t, recorder, authz.AllowAll{}, &captureResolver{target: targetFixturePtr()}, executor))
+	t.Cleanup(unblock)
+	client := dialTestSSH(t, addr)
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Start("wait"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("backend did not start")
+	}
+	client.Close()
+	select {
+	case <-executor.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("backend was not canceled")
+	}
+	if countAuditType(recorder.Events(), "connection.end") != 0 {
+		t.Error("connection.end recorded before backend cleanup completed")
+	}
+	unblock()
+	events := waitForAudit(t, recorder, func(events []audit.Event) bool {
+		return countAuditType(events, "operation.end") == 1 && countAuditType(events, "connection.end") == 1
+	})
+	if events[len(events)-1].Type != "connection.end" {
+		t.Fatalf("connection.end was not last: %v", auditTypes(events))
+	}
+}
+
+type cleanupAuditBackend struct {
+	backend.Backend
+	started, canceled, release chan struct{}
+}
+
+func (b *cleanupAuditBackend) Exec(ctx context.Context, _ backend.ExecRequest) (int, error) {
+	close(b.started)
+	<-ctx.Done()
+	close(b.canceled)
+	<-b.release
+	return 1, ctx.Err()
 }

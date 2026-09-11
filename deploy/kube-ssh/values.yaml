@@ -33,7 +33,6 @@ kubeSsh:
 
   metrics:
     enabled: true
-    path: /metrics
 
   service:
     type: NodePort
@@ -64,10 +63,6 @@ kubeSsh:
     privateKey: ""
     mountPath: /etc/kube-ssh/host-key
 
-  helper:
-    path: /usr/local/bin/kube-ssh-helper
-    remoteDir: /tmp
-
   managed:
     # apiserver uses pods/exec and pods/portforward.
     # cri sends data through the node-local CRI data plane.
@@ -76,14 +71,11 @@ kubeSsh:
       port: 10443
       serverName: ""
 
-  externalSSH:
-    # Maximum time for TCP dial plus the upstream SSH handshake.
-    connectTimeout: 30s
-
   node:
     # Checked in order. Leave empty to probe common containerd, CRI-O, K3s,
     # K0s, and cri-dockerd sockets below the mounted host /run directory.
     runtimeEndpoints: []
+    extraArgs: []
     managementPort: 18080
     expectedClientName: kube-ssh-gateway
     tls:
@@ -101,61 +93,8 @@ kubeSsh:
       - operator: Exists
     affinity: {}
 
-  policy:
-    defaults:
-      containerMode: KubernetesDefault
-      capabilities: ["shell", "exec", "scp", "sftp", "local_forward", "remote_forward", "agent_forward"]
-      envAllowlist: ["*"]
-      localForwardDestinations: ["*"]
-      remoteForwardBinds: ["*"]
-      defaultShell: /bin/sh
-      idleTimeout: ""
-      maxDuration: ""
-    limits:
-      containerMode: All
-      capabilities: ["*"]
-      envAllowlist: ["*"]
-      localForwardDestinations: ["*"]
-      remoteForwardBinds: ["*"]
-      shells: ["*"]
-      idleTimeout: ""
-      maxDuration: ""
-
-  accessPolicy:
-    enabled: true
-    namespace: ""
-
-  authentication:
-    anonymous: false
-    authorizedKeys: []
-    passwords: []
-    webhook:
-      server: ""
-      proxyURL: ""
-      token: ""
-      username: ""
-      password: ""
-      caFile: ""
-      certFile: ""
-      keyFile: ""
-      insecureSkipTLSVerify: false
-      timeout: ""
-
-  authorization:
-    allowAll: false
-    kubernetesSAR: true
-    webhook:
-      server: ""
-      proxyURL: ""
-      token: ""
-      username: ""
-      password: ""
-      caFile: ""
-      certFile: ""
-      keyFile: ""
-      insecureSkipTLSVerify: false
-      timeout: ""
-
+  # Advanced gateway options use CLI flags; omitted flags keep program defaults.
+  # Example: ["--authentication-method=publickey", "--policy-default-idle-timeout=15m"]
   extraArgs: []
   extraEnvVars: []
   extraEnvVarsCM: ""

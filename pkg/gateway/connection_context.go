@@ -1,72 +1,74 @@
 package gateway
 
 import (
-	gossh "github.com/gliderlabs/ssh"
+	"context"
+	"net"
+	"sync"
+
+	cryptossh "golang.org/x/crypto/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 	"xiaoshiai.cn/kube-ssh/pkg/sshprotocol"
 	"xiaoshiai.cn/kube-ssh/pkg/target"
 )
 
-type contextKey string
+// connectionState publishes authentication as one immutable result. Operations
+// and audit readers take a coherent snapshot instead of reading separate fields.
+type connectionState struct {
+	context.Context
+	mu            sync.RWMutex
+	metadata      connectionMetadata
+	authenticated *authenticatedConnection
+	established   bool
 
-const (
-	authenticateContextKey contextKey = "authenticate"
-	targetContextKey       contextKey = "target"
-	sessionPolicyConnKey   contextKey = "session-policy-conn"
-	connectionProtocolKey  contextKey = "connection-protocol"
-	connectionAuditKey     contextKey = "connection-audit"
-	auditFingerprintKey    contextKey = "audit-public-key-fingerprint"
-)
-
-func withAuthenticate(ctx gossh.Context, info authn.AuthenticateInfo) {
-	ctx.SetValue(authenticateContextKey, info)
+	// Installed by the connection owner before authentication starts.
+	audit      *connectionAuditState
+	policyConn *sessionPolicyConn
 }
 
-func withAuditFingerprint(ctx gossh.Context, fingerprint string) {
-	ctx.SetValue(auditFingerprintKey, fingerprint)
+type authenticatedConnection struct {
+	info        authn.AuthenticateInfo
+	target      *target.Target
+	fingerprint string
+	protocol    sshprotocol.ConnectionProtocol
 }
 
-func auditFingerprintFromContext(ctx gossh.Context) string {
-	fingerprint, _ := ctx.Value(auditFingerprintKey).(string)
-	return fingerprint
+type connectionMetadata struct {
+	user, clientVersion, serverVersion string
+	remote, local                      net.Addr
 }
 
-func withConnectionAudit(ctx gossh.Context, state *connectionAuditState) {
-	ctx.SetValue(connectionAuditKey, state)
+type connectionSnapshot struct {
+	metadata      connectionMetadata
+	authenticated *authenticatedConnection
+	established   bool
 }
 
-func connectionAuditFromContext(ctx gossh.Context) *connectionAuditState {
-	state, _ := ctx.Value(connectionAuditKey).(*connectionAuditState)
-	return state
+func (c *connectionState) snapshot() connectionSnapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return connectionSnapshot{metadata: c.metadata, authenticated: c.authenticated, established: c.established}
 }
 
-func authenticateFromContext(ctx gossh.Context) (authn.AuthenticateInfo, bool) {
-	info, ok := ctx.Value(authenticateContextKey).(authn.AuthenticateInfo)
-	return info, ok
+func (c *connectionState) setMetadata(conn cryptossh.ConnMetadata) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.metadata = connectionMetadata{
+		user: conn.User(), clientVersion: string(conn.ClientVersion()), serverVersion: string(conn.ServerVersion()),
+		remote: conn.RemoteAddr(), local: conn.LocalAddr(),
+	}
 }
 
-func withTarget(ctx gossh.Context, tgt *target.Target) {
-	ctx.SetValue(targetContextKey, tgt)
+func (c *connectionState) publishAuthenticated(result authenticatedConnection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authenticated = &result
 }
 
-func targetFromContext(ctx gossh.Context) (*target.Target, bool) {
-	tgt, ok := ctx.Value(targetContextKey).(*target.Target)
-	return tgt, ok
+func (c *connectionState) markEstablished() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.established = true
 }
 
-func withConnectionProtocol(ctx gossh.Context, protocol sshprotocol.ConnectionProtocol) {
-	ctx.SetValue(connectionProtocolKey, protocol)
-}
-
-func connectionProtocolFromContext(ctx gossh.Context) sshprotocol.ConnectionProtocol {
-	return ctx.Value(connectionProtocolKey).(sshprotocol.ConnectionProtocol)
-}
-
-func withSessionPolicyConn(ctx gossh.Context, conn *sessionPolicyConn) {
-	ctx.SetValue(sessionPolicyConnKey, conn)
-}
-
-func sessionPolicyConnFromContext(ctx gossh.Context) (*sessionPolicyConn, bool) {
-	conn, ok := ctx.Value(sessionPolicyConnKey).(*sessionPolicyConn)
-	return conn, ok && conn != nil
-}
+func (c *connectionState) User() string         { return c.snapshot().metadata.user }
+func (c *connectionState) RemoteAddr() net.Addr { return c.snapshot().metadata.remote }

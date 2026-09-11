@@ -3,13 +3,11 @@ package gateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"strconv"
 	"sync"
 	"time"
 
-	gossh "github.com/gliderlabs/ssh"
 	"xiaoshiai.cn/kube-ssh/pkg/audit"
 	"xiaoshiai.cn/kube-ssh/pkg/authn"
 	"xiaoshiai.cn/kube-ssh/pkg/authz"
@@ -19,7 +17,7 @@ import (
 
 type operationContext struct {
 	// ctx is the SSH connection context shared by channels on this connection.
-	ctx gossh.Context
+	ctx *connectionState
 	// info is the authenticated user identity attached during SSH authentication.
 	info authn.AuthenticateInfo
 	// target is the resolved target for this SSH connection.
@@ -40,15 +38,10 @@ type operationSpec struct {
 	auditFields map[string]string
 }
 
-func (s *gateway) newOperationContext(ctx gossh.Context) (*operationContext, error) {
-	info, ok := authenticateFromContext(ctx)
-	if !ok {
-		return nil, fmt.Errorf("internal error: missing identity")
-	}
-	tgt, ok := targetFromContext(ctx)
-	if !ok {
-		return nil, fmt.Errorf("internal error: missing target")
-	}
+// Operations are dispatched only after the connection publishes authentication.
+func newOperationContext(ctx *connectionState) *operationContext {
+	result := ctx.snapshot().authenticated
+	info, tgt := result.info, result.target
 
 	event := audit.Event{
 		Fields: map[string]string{
@@ -65,7 +58,7 @@ func (s *gateway) newOperationContext(ctx gossh.Context) (*operationContext, err
 		info:   info,
 		target: tgt,
 		audit:  event,
-	}, nil
+	}
 }
 
 func (s *gateway) authorizeOperation(sc *operationContext, spec operationSpec) (string, bool) {
@@ -96,7 +89,7 @@ func (s *gateway) authorizeOperation(sc *operationContext, spec operationSpec) (
 }
 
 func (s *gateway) startOperation(sc *operationContext, spec operationSpec) func(string) {
-	recorder := s.metricsRecorder()
+	recorder := s.metrics
 	kind := sc.target.Kind
 	capability := string(spec.capability)
 	start := time.Now()
@@ -124,11 +117,8 @@ func (s *gateway) startOperation(sc *operationContext, spec operationSpec) func(
 }
 
 func (s *gateway) operationEvent(sc *operationContext, spec operationSpec, eventType string) audit.Event {
-	event := s.connectionEvent(sc.ctx, connectionAuditFromContext(sc.ctx), eventType)
+	event := s.connectionEvent(sc.ctx, eventType)
 	event.Correlation.OperationID = sc.operationID
-	if event.Actor == nil {
-		event.Actor = auditActor(sc.info, "")
-	}
 	event.Target = auditTarget(sc.target)
 	event.Operation = &audit.Operation{Name: spec.name, Capability: string(spec.capability), Command: spec.auditFields["command"]}
 	event.Fields = make(map[string]string, len(spec.auditFields))

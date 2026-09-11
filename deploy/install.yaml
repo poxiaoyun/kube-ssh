@@ -865,44 +865,11 @@ spec:
               value: "{NodeIP}:30022"
             - name: METRICS_LISTEN_ADDRESS
               value: ":8080"
-            - name: METRICS_PATH
-              value: "/metrics"
-            - name: POLICY_DEFAULT_CONTAINER_MODE
-              value: "KubernetesDefault"
-            - name: POLICY_DEFAULT_CAPABILITY
-              value: "shell exec scp sftp local_forward remote_forward agent_forward"
-            - name: POLICY_DEFAULT_ENV
-              value: "*"
-            - name: POLICY_DEFAULT_LOCAL_FORWARD
-              value: "*"
-            - name: POLICY_DEFAULT_REMOTE_FORWARD
-              value: "*"
-            - name: POLICY_DEFAULT_SHELL
-              value: "/bin/sh"
-            - name: POLICY_LIMIT_CONTAINER_MODE
-              value: "All"
-            - name: POLICY_LIMIT_CAPABILITY
-              value: "*"
-            - name: POLICY_LIMIT_ENV
-              value: "*"
-            - name: POLICY_LIMIT_LOCAL_FORWARD
-              value: "*"
-            - name: POLICY_LIMIT_REMOTE_FORWARD
-              value: "*"
-            - name: POLICY_LIMIT_SHELL
-              value: "*"
             - name: HELPER_PATH
-              value: "/usr/local/bin/kube-ssh-helper"
-            - name: HELPER_REMOTE_DIR
-              value: "/tmp"
-            - name: MANAGED_TRANSPORT
-              value: "apiserver"
-            - name: EXTERNAL_SSH_CONNECT_TIMEOUT
-              value: "30s"
+              value: /usr/local/bin/kube-ssh-helper
+            # Kubernetes deployment defaults differ from standalone mode.
             - name: ACCESS_POLICY_ENABLED
               value: "true"
-            - name: AUTHENTICATION_ANONYMOUS
-              value: "false"
             - name: AUTHORIZATION_ALLOW_ALL
               value: "false"
             - name: AUTHORIZATION_KUBERNETES_SAR

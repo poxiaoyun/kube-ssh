@@ -1,11 +1,44 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/spf13/pflag"
 )
+
+func TestAuthenticationMethodFlags(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  string
+		args []string
+		want []string
+	}{
+		{name: "default", want: []string{"publickey", "password"}},
+		{name: "environment", env: "publickey", want: []string{"publickey"}},
+		{name: "both environment", env: "publickey password", want: []string{"publickey", "password"}},
+		{name: "command overrides environment", env: "password", args: []string{"--authentication-method=publickey"}, want: []string{"publickey"}},
+		{name: "repeatable", args: []string{"--authentication-method=publickey", "--authentication-method=password"}, want: []string{"publickey", "password"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("AUTHENTICATION_METHOD", tt.env)
+			}
+			cmd := newRootCmd()
+			if err := cmd.ParseFlags(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.PreRunE(cmd, nil); err != nil {
+				t.Fatal(err)
+			}
+			got, err := cmd.Flags().GetStringArray("authentication-method")
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("methods = %v, error = %v; want %v", got, err, tt.want)
+			}
+		})
+	}
+}
 
 func TestLoadEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDRESS", ":2022")

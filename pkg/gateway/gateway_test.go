@@ -47,6 +47,7 @@ func TestAccessSessionMaxDurationClosesSSHConnection(t *testing.T) {
 	access := &sshv1.Access{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "nginx"},
 		Spec: sshv1.AccessSpec{
+			Credentials: []sshv1.AccessCredential{{Username: "alice", Passwords: []string{"secret"}}},
 			Session: &sshv1.SessionPolicy{
 				MaxDuration: &metav1.Duration{Duration: 100 * time.Millisecond},
 			},
